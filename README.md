@@ -4,6 +4,8 @@ A small static web app that lists all *Coleophora* records from the DNA dataset,
 with a free-text filter and a detail page showing the full data including the COI
 sequence and source link.
 
+**Live site:** https://unger.github.io/dna-plot/
+
 ## Files
 
 - `index.html` — the whole app (HTML + CSS + JS, no dependencies).
