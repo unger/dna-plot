@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coleophora – DNA</title>
+<style>
+  :root {
+    --bg: #f7f7f8;
+    --panel: #ffffff;
+    --border: #e2e2e6;
+    --text: #1a1a1e;
+    --muted: #6b6b76;
+    --accent: #2f6feb;
+    --accent-soft: #eaf0fe;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+  }
+  header {
+    position: sticky; top: 0; z-index: 5;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 20px;
+  }
+  header h1 { margin: 0 0 10px; font-size: 18px; }
+  header h1 .count { color: var(--muted); font-weight: 400; font-size: 14px; }
+  #filter {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 15px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    outline: none;
+  }
+  #filter:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+  main { max-width: 900px; margin: 0 auto; padding: 16px 20px 60px; }
+
+  /* List */
+  ul.list { list-style: none; margin: 0; padding: 0; }
+  ul.list li {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  }
+  ul.list li:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .li-main { display: flex; flex-direction: column; }
+  .sci { font-weight: 600; font-style: italic; }
+  .common { color: var(--muted); font-size: 13px; }
+  .li-meta { color: var(--muted); font-size: 13px; text-align: right; white-space: nowrap; }
+  .empty { color: var(--muted); text-align: center; padding: 40px; }
+
+  /* Detail */
+  .back {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: none; border: none; color: var(--accent);
+    font-size: 15px; cursor: pointer; padding: 4px 0; margin-bottom: 12px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px;
+  }
+  .card h2 { margin: 0; font-style: italic; }
+  .card .subtitle { color: var(--muted); margin: 2px 0 18px; }
+  dl.fields { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; }
+  dl.fields dt { color: var(--muted); }
+  dl.fields dd { margin: 0; word-break: break-word; }
+  dl.fields a { color: var(--accent); }
+
+  .seq-header { display: flex; align-items: center; justify-content: space-between; margin: 22px 0 8px; }
+  .seq-header h3 { margin: 0; font-size: 15px; }
+  .copy-btn {
+    background: var(--accent); color: #fff; border: none; border-radius: 7px;
+    padding: 7px 14px; font-size: 14px; cursor: pointer;
+  }
+  .copy-btn.ok { background: #2f9e57; }
+  pre.seq {
+    margin: 0; padding: 14px 16px;
+    background: #0f1117; color: #d7e0ef;
+    border-radius: 8px; overflow-x: auto;
+    font: 14px/1.7 "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+    letter-spacing: 0.5px;
+  }
+  .seq .pos { color: #5c6579; user-select: none; margin-right: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Coleophora <span class="count" id="count"></span></h1>
+  <input id="filter" type="search" placeholder="Filtrera – mellanslagsseparerade ord…" autocomplete="off">
+  <div class="hint">Söker i artnamn, vetenskapligt namn, lokalnamn, provins och samlingsnummer. Alla ord måste matcha.</div>
+</header>
+<main id="view"></main>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var SEARCH_FIELDS = ["Artnamn", "Vetenskapligt namn", "Lokalnamn", "Provins", "Samlings-nummer"];
+
+  // Fields shown on the detail page, in order. [key, label]
+  var DETAIL_FIELDS = [
+    ["Artnamn", "Artnamn"],
+    ["Vetenskapligt namn", "Vetenskapligt namn"],
+    ["Lokalnamn", "Lokalnamn"],
+    ["Provins", "Provins"],
+    ["Startdatum", "Startdatum"],
+    ["Substrat", "Substrat"],
+    ["Samlings-nummer", "Samlingsnummer"],
+    ["Ordning", "Ordning"],
+    ["Familj", "Familj"],
+    ["Underfamilj", "Underfamilj"],
+    ["Släkte", "Släkte"],
+    ["Art", "Art"],
+    ["Projekt", "Projekt"],
+    ["ID", "ID"],
+    ["Length", "Längd (bp)"],
+    ["Data1", "Data1"],
+    ["Data2", "Data2"]
+  ];
+
+  // Keep only Coleophora, sorted alphabetically by scientific name.
+  var records = (window.DNA_DATA || [])
+    .filter(function (r) { return r["Släkte"] === "Coleophora"; })
+    .map(function (r, i) { r.__i = i; return r; });
+
+  records.sort(function (a, b) {
+    var sa = (a["Vetenskapligt namn"] || "").toLowerCase();
+    var sb = (b["Vetenskapligt namn"] || "").toLowerCase();
+    return sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
+
+  var view = document.getElementById("view");
+  var filterEl = document.getElementById("filter");
+  var countEl = document.getElementById("count");
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function matches(rec, words) {
+    var hay = SEARCH_FIELDS.map(function (f) { return rec[f] || ""; }).join(" ").toLowerCase();
+    return words.every(function (w) { return hay.indexOf(w) !== -1; });
+  }
+
+  function currentMatches() {
+    var words = filterEl.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return records.slice();
+    return records.filter(function (r) { return matches(r, words); });
+  }
+
+  function renderList() {
+    var list = currentMatches();
+    var species = {};
+    list.forEach(function (r) { species[r["Vetenskapligt namn"] || ""] = 1; });
+    var nSpecies = Object.keys(species).length;
+    countEl.textContent =
+      "(" + list.length + (list.length === 1 ? " individ" : " individer") +
+      " · " + nSpecies + (nSpecies === 1 ? " art)" : " arter)");
+
+    if (!list.length) {
+      view.innerHTML = '<p class="empty">Inga träffar.</p>';
+      return;
+    }
+
+    var ul = document.createElement("ul");
+    ul.className = "list";
+    list.forEach(function (r) {
+      var li = document.createElement("li");
+      li.innerHTML =
+        '<span class="li-main">' +
+          '<span class="sci">' + esc(r["Vetenskapligt namn"] || "—") + '</span>' +
+          '<span class="common">' + esc(r["Artnamn"] || "") + '</span>' +
+        '</span>' +
+        '<span class="li-meta">' +
+          esc(r["Provins"] || "") +
+          (r["Lokalnamn"] ? '<br>' + esc(r["Lokalnamn"]) : "") +
+        '</span>';
+      li.addEventListener("click", function () { renderDetail(r); });
+      ul.appendChild(li);
+    });
+    view.innerHTML = "";
+    view.appendChild(ul);
+  }
+
+  // Split COI into groups of 10, 4 groups per row, space-separated for display only.
+  function formatSeq(seq) {
+    var html = "";
+    var groups = [];
+    for (var i = 0; i < seq.length; i += 10) groups.push(seq.slice(i, i + 10));
+    for (var g = 0; g < groups.length; g += 4) {
+      var rowGroups = groups.slice(g, g + 4);
+      var pos = g * 10 + 1;
+      var posLabel = String(pos).padStart(String(seq.length).length, " ");
+      html += '<span class="pos">' + posLabel + '</span>' + esc(rowGroups.join(" ")) + "\n";
+    }
+    return html;
+  }
+
+  function renderDetail(r) {
+    var seq = r["COI"] || "";
+    var rows = DETAIL_FIELDS.filter(function (f) {
+      var v = r[f[0]];
+      return v !== null && v !== undefined && v !== "";
+    }).map(function (f) {
+      return "<dt>" + esc(f[1]) + "</dt><dd>" + esc(r[f[0]]) + "</dd>";
+    }).join("");
+
+    var link = r["Länk"]
+      ? '<dt>Länk</dt><dd><a href="' + esc(r["Länk"]) + '" target="_blank" rel="noopener">' + esc(r["Länk"]) + "</a></dd>"
+      : "";
+
+    view.innerHTML =
+      '<button class="back" id="back">&larr; Tillbaka till listan</button>' +
+      '<div class="card">' +
+        '<h2>' + esc(r["Vetenskapligt namn"] || "—") + "</h2>" +
+        '<div class="subtitle">' + esc(r["Artnamn"] || "") + "</div>" +
+        '<dl class="fields">' + rows + link + "</dl>" +
+        (seq ?
+          '<div class="seq-header">' +
+            "<h3>COI (" + seq.length + " bp)</h3>" +
+            '<button class="copy-btn" id="copy">Kopiera sekvens</button>' +
+          "</div>" +
+          '<pre class="seq">' + formatSeq(seq) + "</pre>"
+        : "") +
+      "</div>";
+
+    document.getElementById("back").addEventListener("click", function () {
+      renderList();
+      window.scrollTo(0, 0);
+    });
+
+    if (seq) {
+      var copyBtn = document.getElementById("copy");
+      copyBtn.addEventListener("click", function () {
+        // Copy the raw sequence, without the display spaces.
+        var done = function () {
+          copyBtn.textContent = "Kopierat ✓";
+          copyBtn.classList.add("ok");
+          setTimeout(function () {
+            copyBtn.textContent = "Kopiera sekvens";
+            copyBtn.classList.remove("ok");
+          }, 1500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(seq).then(done, fallbackCopy);
+        } else {
+          fallbackCopy();
+        }
+        function fallbackCopy() {
+          var ta = document.createElement("textarea");
+          ta.value = seq;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand("copy"); done(); } catch (e) {}
+          document.body.removeChild(ta);
+        }
+      });
+    }
+
+    window.scrollTo(0, 0);
+  }
+
+  filterEl.addEventListener("input", renderList);
+  renderList();
+})();
+</script>
+</body>
+</html>
