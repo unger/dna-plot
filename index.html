@@ -92,6 +92,26 @@
     letter-spacing: 0.5px;
   }
   .seq .pos { color: #5c6579; user-select: none; margin-right: 14px; }
+
+  ul.similar { list-style: none; margin: 0; padding: 0; }
+  ul.similar li {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 12px; margin-bottom: 6px; cursor: pointer;
+  }
+  ul.similar li:hover { border-color: var(--accent); background: var(--accent-soft); }
+  ul.similar .sci { font-size: 14px; }
+  ul.similar .common { font-size: 12px; }
+  .pct {
+    font: 600 14px/1 "SF Mono", "Cascadia Code", Consolas, monospace;
+    white-space: nowrap; text-align: right;
+  }
+  .pct small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; margin-top: 2px; }
+  .show-more {
+    background: none; border: none; color: var(--accent);
+    font-size: 14px; cursor: pointer; padding: 6px 0; margin-top: 2px;
+  }
+  .show-more:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -196,6 +216,32 @@
     view.appendChild(ul);
   }
 
+  // % identity between two equal-length COI sequences, comparing position by
+  // position. Positions where either base is N (ambiguous) are excluded.
+  function coiIdentity(a, b) {
+    var n = Math.min(a.length, b.length);
+    var compared = 0, match = 0;
+    for (var i = 0; i < n; i++) {
+      var ca = a[i], cb = b[i];
+      if (ca === "N" || cb === "N") continue;
+      compared++;
+      if (ca === cb) match++;
+    }
+    return { pct: compared ? (match / compared * 100) : 0, diffs: compared - match, compared: compared };
+  }
+
+  var SIMILAR_STEP = 10; // how many to show initially and per "Visa fler"
+
+  // All individuals ranked by COI similarity to `rec`, most similar first.
+  function similarTo(rec) {
+    var seq = rec["COI"];
+    if (!seq) return [];
+    return records
+      .filter(function (o) { return o !== rec && o["COI"]; })
+      .map(function (o) { return { rec: o, id: coiIdentity(seq, o["COI"]) }; })
+      .sort(function (a, b) { return b.id.pct - a.id.pct; });
+  }
+
   // Split COI into groups of 10, 4 groups per row, space-separated for display only.
   function formatSeq(seq) {
     var html = "";
@@ -223,12 +269,19 @@
       ? '<dt>Länk</dt><dd><a href="' + esc(r["Länk"]) + '" target="_blank" rel="noopener">' + esc(r["Länk"]) + "</a></dd>"
       : "";
 
+    var similar = similarTo(r);
+    var similarHtml = similar.length
+      ? '<div class="seq-header"><h3>Närmast lika (COI-likhet)</h3></div>' +
+        '<div id="similar-box"></div>'
+      : "";
+
     view.innerHTML =
       '<button class="back" id="back">&larr; Tillbaka till listan</button>' +
       '<div class="card">' +
         '<h2>' + esc(r["Vetenskapligt namn"] || "—") + "</h2>" +
         '<div class="subtitle">' + esc(r["Artnamn"] || "") + "</div>" +
         '<dl class="fields">' + rows + link + "</dl>" +
+        similarHtml +
         (seq ?
           '<div class="seq-header">' +
             "<h3>COI (" + seq.length + " bp)</h3>" +
@@ -242,6 +295,51 @@
       renderList();
       window.scrollTo(0, 0);
     });
+
+    var similarBox = document.getElementById("similar-box");
+    var shown = SIMILAR_STEP;
+
+    function renderSimilar() {
+      var items = similar.slice(0, shown).map(function (s, k) {
+        return '<li data-sim="' + k + '">' +
+          '<span class="li-main">' +
+            '<span class="sci">' + esc(s.rec["Vetenskapligt namn"] || "—") + '</span>' +
+            '<span class="common">' +
+              esc(s.rec["Artnamn"] || "") +
+              (s.rec["Provins"] ? " · " + esc(s.rec["Provins"]) : "") +
+              (s.rec["Samlings-nummer"] ? " · " + esc(s.rec["Samlings-nummer"]) : "") +
+            '</span>' +
+          '</span>' +
+          '<span class="pct">' + s.id.pct.toFixed(1) + " %" +
+            "<small>" + s.id.diffs + (s.id.diffs === 1 ? " skillnad" : " skillnader") + "</small>" +
+          '</span>' +
+        '</li>';
+      }).join("");
+
+      var remaining = similar.length - shown;
+      var more = remaining > 0
+        ? '<button class="show-more" id="show-more">Visa fler (' +
+            Math.min(SIMILAR_STEP, remaining) + " av " + remaining + " kvar)</button>"
+        : "";
+
+      similarBox.innerHTML = '<ul class="similar">' + items + "</ul>" + more;
+
+      Array.prototype.forEach.call(similarBox.querySelectorAll("li[data-sim]"), function (li) {
+        li.addEventListener("click", function () {
+          renderDetail(similar[+li.getAttribute("data-sim")].rec);
+        });
+      });
+
+      var moreBtn = document.getElementById("show-more");
+      if (moreBtn) {
+        moreBtn.addEventListener("click", function () {
+          shown += SIMILAR_STEP;
+          renderSimilar();
+        });
+      }
+    }
+
+    if (similarBox) renderSimilar();
 
     if (seq) {
       var copyBtn = document.getElementById("copy");
