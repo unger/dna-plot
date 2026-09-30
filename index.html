@@ -72,7 +72,7 @@
   }
   .card h2 { margin: 0; font-style: italic; }
   .card .subtitle { color: var(--muted); margin: 2px 0 18px; }
-  dl.fields { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; }
+  dl.fields { display: grid; grid-template-columns: max-content 1fr; gap: 3px 18px; margin: 0; }
   dl.fields dt { color: var(--muted); }
   dl.fields dd { margin: 0; word-break: break-word; }
   dl.fields a { color: var(--accent); }
@@ -112,6 +112,40 @@
     font-size: 14px; cursor: pointer; padding: 6px 0; margin-top: 2px;
   }
   .show-more:hover { text-decoration: underline; }
+
+  ul.similar li .li-main { flex: 1 1 auto; min-width: 0; }
+  .cmp-btn {
+    flex: none; background: #fff; border: 1px solid var(--accent); color: var(--accent);
+    border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer;
+  }
+  .cmp-btn:hover { background: var(--accent-soft); }
+
+  /* Compare view */
+  .cmp-summary { margin-bottom: 8px; }
+  .cmp-summary .pct { font-size: 15px; }
+  .legend { color: var(--muted); font-size: 12px; margin: 4px 0 12px; }
+  .legend .sw {
+    display: inline-block; width: 13px; height: 13px; border-radius: 3px;
+    vertical-align: -2px; margin: 0 4px 0 12px;
+  }
+  .legend .sw:first-child { margin-left: 0; }
+  .sw-mm { background: #6c5ce7; }
+  .sw-eq { background: #c9edf1; }
+
+  pre.align {
+    margin: 0; padding: 10px 14px; background: #fff; color: #1a1a1e;
+    border: 1px solid var(--border); border-radius: 8px; overflow-x: auto;
+    font: 13px/1.15 "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+  pre.align .sb { background: #c9edf1; }
+  pre.align .mm { background: #6c5ce7; color: #fff; }
+  pre.align .tb { color: #8a95a5; }
+
+  .compare-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 22px; }
+  .compare-cols .col { min-width: 0; }
+  .compare-cols .col h3 { font-style: italic; margin: 0; }
+  .compare-cols .col h4 { margin: 20px 0 8px; font-size: 14px; }
+  @media (max-width: 700px) { .compare-cols { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -131,22 +165,17 @@
 
   // Fields shown on the detail page, in order. [key, label]
   var DETAIL_FIELDS = [
-    ["Artnamn", "Artnamn"],
-    ["Vetenskapligt namn", "Vetenskapligt namn"],
     ["Lokalnamn", "Lokalnamn"],
     ["Provins", "Provins"],
     ["Startdatum", "Startdatum"],
     ["Substrat", "Substrat"],
     ["Samlings-nummer", "Samlingsnummer"],
-    ["Ordning", "Ordning"],
-    ["Familj", "Familj"],
     ["Underfamilj", "Underfamilj"],
     ["Släkte", "Släkte"],
     ["Art", "Art"],
     ["Projekt", "Projekt"],
     ["ID", "ID"],
     ["Length", "Längd (bp)"],
-    ["Data1", "Data1"],
     ["Data2", "Data2"]
   ];
 
@@ -256,6 +285,157 @@
     return html;
   }
 
+  // Metadata definition list for one record (shared by detail and compare).
+  function fieldsHtml(rec) {
+    var rows = DETAIL_FIELDS.filter(function (f) {
+      var v = rec[f[0]];
+      return v !== null && v !== undefined && v !== "";
+    }).map(function (f) {
+      return "<dt>" + esc(f[1]) + "</dt><dd>" + esc(rec[f[0]]) + "</dd>";
+    }).join("");
+    var link = rec["Länk"]
+      ? '<dt>Länk</dt><dd><a href="' + esc(rec["Länk"]) + '" target="_blank" rel="noopener">Artportalen ↗</a></dd>'
+      : "";
+    return '<dl class="fields">' + rows + link + "</dl>";
+  }
+
+  // Renders a ranked "närmast lika" list into `container`.
+  // opts: onRowClick(rec), onCompare(rec) [adds a Jämför button], exclude(rec).
+  function makeSimilarList(container, refRec, opts) {
+    opts = opts || {};
+    var similar = similarTo(refRec);
+    if (opts.exclude) similar = similar.filter(function (s) { return s.rec !== opts.exclude; });
+    var shown = SIMILAR_STEP;
+
+    function render() {
+      var items = similar.slice(0, shown).map(function (s, k) {
+        return '<li data-sim="' + k + '">' +
+          '<span class="li-main">' +
+            '<span class="sci">' + esc(s.rec["Vetenskapligt namn"] || "—") + '</span>' +
+            '<span class="common">' +
+              esc(s.rec["Artnamn"] || "") +
+              (s.rec["Provins"] ? " · " + esc(s.rec["Provins"]) : "") +
+              (s.rec["Samlings-nummer"] ? " · " + esc(s.rec["Samlings-nummer"]) : "") +
+            '</span>' +
+          '</span>' +
+          '<span class="pct">' + s.id.pct.toFixed(1) + " %" +
+            "<small>" + s.id.diffs + (s.id.diffs === 1 ? " skillnad" : " skillnader") + "</small>" +
+          '</span>' +
+          (opts.onCompare ? '<button class="cmp-btn" data-cmp="' + k + '">Jämför</button>' : "") +
+        '</li>';
+      }).join("");
+
+      var remaining = similar.length - shown;
+      var more = remaining > 0
+        ? '<button class="show-more" data-more="1">Visa fler (' +
+            Math.min(SIMILAR_STEP, remaining) + " av " + remaining + " kvar)</button>"
+        : "";
+
+      container.innerHTML = '<ul class="similar">' + items + "</ul>" + more;
+
+      if (opts.onRowClick) {
+        Array.prototype.forEach.call(container.querySelectorAll("li[data-sim]"), function (li) {
+          li.addEventListener("click", function () {
+            opts.onRowClick(similar[+li.getAttribute("data-sim")].rec);
+          });
+        });
+      }
+      Array.prototype.forEach.call(container.querySelectorAll("button[data-cmp]"), function (btn) {
+        btn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          opts.onCompare(similar[+btn.getAttribute("data-cmp")].rec);
+        });
+      });
+      var moreBtn = container.querySelector("button[data-more]");
+      if (moreBtn) moreBtn.addEventListener("click", function () { shown += SIMILAR_STEP; render(); });
+    }
+
+    render();
+  }
+
+  // Pairwise alignment view: 60 bp per row, match track (| / .), mismatches boxed.
+  function alignHtml(a, b) {
+    var W = 60;
+    var len = Math.max(a.length, b.length);
+    var g = String(len).length;
+    function pad(n) { return String(n).padStart(g, " "); }
+    var blank = " ".repeat(g);
+    var blocks = [];
+    for (var i = 0; i < len; i += W) {
+      var end = Math.min(i + W, len);
+      var aB = "", bB = "", tB = "";
+      for (var j = i; j < end; j++) {
+        var ca = a[j] || "-", cb = b[j] || "-";
+        if (ca === cb) {
+          aB += ca; bB += cb; tB += "|";
+        } else {
+          aB += '<span class="mm">' + ca + "</span>";
+          bB += '<span class="mm">' + cb + "</span>";
+          tB += ".";
+        }
+        // Group in tens for readability (display only), no trailing group gap.
+        if ((j + 1) % 10 === 0 && j + 1 !== end) { aB += " "; bB += " "; tB += " "; }
+      }
+      blocks.push(
+        '<span class="ln">' + pad(i + 1) + "  <span class=\"sb\">" + aB + "</span>  " + pad(end) + "</span>\n" +
+        '<span class="ln">' + blank + "  <span class=\"tb\">" + tB + "</span></span>\n" +
+        '<span class="ln">' + pad(i + 1) + "  <span class=\"sb\">" + bB + "</span>  " + pad(end) + "</span>"
+      );
+    }
+    return blocks.join("\n\n");
+  }
+
+  // Side-by-side comparison of two individuals.
+  function renderCompare(a, b) {
+    var id = coiIdentity(a["COI"] || "", b["COI"] || "");
+    view.innerHTML =
+      '<button class="back" id="back">&larr; Tillbaka till listan</button>' +
+      '<div class="card">' +
+        "<h2>Jämförelse</h2>" +
+        '<div class="cmp-summary">' +
+          '<span class="pct">' + id.pct.toFixed(1) + " % likhet · " + id.diffs +
+            " skillnader / " + id.compared + " bp</span>" +
+        "</div>" +
+        '<div class="legend">' +
+          '<span class="sw sw-mm"></span> skillnad' +
+          '<span class="sw sw-eq"></span> lika' +
+        "</div>" +
+        '<pre class="align">' + alignHtml(a["COI"] || "", b["COI"] || "") + "</pre>" +
+        '<div class="compare-cols">' +
+          '<div class="col">' +
+            "<h3>" + esc(a["Vetenskapligt namn"] || "—") + "</h3>" +
+            '<div class="subtitle">' + esc(a["Artnamn"] || "") + "</div>" +
+            fieldsHtml(a) +
+            "<h4>Byt vänster – närmast lika</h4>" +
+            '<div id="simA"></div>' +
+          "</div>" +
+          '<div class="col">' +
+            "<h3>" + esc(b["Vetenskapligt namn"] || "—") + "</h3>" +
+            '<div class="subtitle">' + esc(b["Artnamn"] || "") + "</div>" +
+            fieldsHtml(b) +
+            "<h4>Byt höger – närmast lika</h4>" +
+            '<div id="simB"></div>' +
+          "</div>" +
+        "</div>" +
+      "</div>";
+
+    document.getElementById("back").addEventListener("click", function () {
+      renderList();
+      window.scrollTo(0, 0);
+    });
+
+    makeSimilarList(document.getElementById("simA"), a, {
+      exclude: b,
+      onRowClick: function (o) { renderCompare(o, b); }
+    });
+    makeSimilarList(document.getElementById("simB"), b, {
+      exclude: a,
+      onRowClick: function (o) { renderCompare(a, o); }
+    });
+
+    window.scrollTo(0, 0);
+  }
+
   function renderDetail(r) {
     var seq = r["COI"] || "";
     var rows = DETAIL_FIELDS.filter(function (f) {
@@ -297,49 +477,12 @@
     });
 
     var similarBox = document.getElementById("similar-box");
-    var shown = SIMILAR_STEP;
-
-    function renderSimilar() {
-      var items = similar.slice(0, shown).map(function (s, k) {
-        return '<li data-sim="' + k + '">' +
-          '<span class="li-main">' +
-            '<span class="sci">' + esc(s.rec["Vetenskapligt namn"] || "—") + '</span>' +
-            '<span class="common">' +
-              esc(s.rec["Artnamn"] || "") +
-              (s.rec["Provins"] ? " · " + esc(s.rec["Provins"]) : "") +
-              (s.rec["Samlings-nummer"] ? " · " + esc(s.rec["Samlings-nummer"]) : "") +
-            '</span>' +
-          '</span>' +
-          '<span class="pct">' + s.id.pct.toFixed(1) + " %" +
-            "<small>" + s.id.diffs + (s.id.diffs === 1 ? " skillnad" : " skillnader") + "</small>" +
-          '</span>' +
-        '</li>';
-      }).join("");
-
-      var remaining = similar.length - shown;
-      var more = remaining > 0
-        ? '<button class="show-more" id="show-more">Visa fler (' +
-            Math.min(SIMILAR_STEP, remaining) + " av " + remaining + " kvar)</button>"
-        : "";
-
-      similarBox.innerHTML = '<ul class="similar">' + items + "</ul>" + more;
-
-      Array.prototype.forEach.call(similarBox.querySelectorAll("li[data-sim]"), function (li) {
-        li.addEventListener("click", function () {
-          renderDetail(similar[+li.getAttribute("data-sim")].rec);
-        });
+    if (similarBox) {
+      makeSimilarList(similarBox, r, {
+        onRowClick: function (o) { renderDetail(o); },
+        onCompare: function (o) { renderCompare(r, o); }
       });
-
-      var moreBtn = document.getElementById("show-more");
-      if (moreBtn) {
-        moreBtn.addEventListener("click", function () {
-          shown += SIMILAR_STEP;
-          renderSimilar();
-        });
-      }
     }
-
-    if (similarBox) renderSimilar();
 
     if (seq) {
       var copyBtn = document.getElementById("copy");
