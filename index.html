@@ -72,10 +72,20 @@
   }
   .card h2 { margin: 0; font-style: italic; }
   .card .subtitle { color: var(--muted); margin: 2px 0 18px; }
+
+  /* Detail layout: stacked by default, Närmast lika moves to a right column when wide. */
+  .detail-grid { display: grid; grid-template-columns: 1fr; gap: 24px; }
+  .detail-main { min-width: 0; }
+  .detail-side { min-width: 0; }
+  @media (min-width: 820px) {
+    .detail-grid { grid-template-columns: 1fr 1fr; align-items: start; }
+    .detail-side .seq-header { margin-top: 0; }
+  }
   dl.fields { display: grid; grid-template-columns: max-content 1fr; gap: 3px 18px; margin: 0; }
   dl.fields dt { color: var(--muted); }
   dl.fields dd { margin: 0; word-break: break-word; }
   dl.fields a { color: var(--accent); }
+  dl.fields .link-row { grid-column: 1 / -1; margin: 4px 0 0; word-break: break-all; }
 
   .seq-header { display: flex; align-items: center; justify-content: space-between; margin: 22px 0 8px; }
   .seq-header h3 { margin: 0; font-size: 15px; }
@@ -85,11 +95,11 @@
   }
   .copy-btn.ok { background: #2f9e57; }
   pre.seq {
-    margin: 0; padding: 14px 16px;
+    margin: 0; padding: 10px 12px;
     background: #0f1117; color: #d7e0ef;
     border-radius: 8px; overflow-x: auto;
-    font: 14px/1.7 "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
-    letter-spacing: 0.5px;
+    font: 12px/1.5 "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+    letter-spacing: 0.3px;
   }
   .seq .pos { color: #5c6579; user-select: none; margin-right: 14px; }
 
@@ -113,6 +123,24 @@
   }
   .show-more:hover { text-decoration: underline; }
 
+  /* Collapsed identical-COI group */
+  ul.similar li.sim-group {
+    display: block; padding: 0; cursor: default; overflow: hidden;
+  }
+  ul.similar li.sim-group:hover { border-color: var(--border); background: transparent; }
+  .grouphead {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 12px; cursor: pointer;
+  }
+  .grouphead:hover { background: var(--accent-soft); }
+  .expand-link { color: var(--accent); cursor: pointer; white-space: nowrap; }
+  .expand-link:hover { text-decoration: underline; }
+  ul.similar.nested {
+    margin: 0; padding: 4px 8px 8px 16px; background: #fafafb;
+    border-top: 1px solid var(--border);
+  }
+  ul.similar.nested li { margin-bottom: 4px; }
+
   ul.similar li .li-main { flex: 1 1 auto; min-width: 0; }
   .cmp-btn {
     flex: none; background: #fff; border: 1px solid var(--accent); color: var(--accent);
@@ -131,20 +159,29 @@
   .legend .sw:first-child { margin-left: 0; }
   .sw-mm { background: #6c5ce7; }
   .sw-eq { background: #c9edf1; }
+  .sw-gp { background: #f6d18b; }
 
+  .align-wrap { text-align: center; }
   pre.align {
+    display: inline-block; max-width: 100%; text-align: left;
     margin: 0; padding: 10px 14px; background: #fff; color: #1a1a1e;
     border: 1px solid var(--border); border-radius: 8px; overflow-x: auto;
     font: 13px/1.15 "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
   }
   pre.align .sb { background: #c9edf1; }
   pre.align .mm { background: #6c5ce7; color: #fff; }
+  pre.align .gp { background: #f6d18b; color: #7a5a12; }
   pre.align .tb { color: #8a95a5; }
 
   .compare-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-top: 22px; }
   .compare-cols .col { min-width: 0; }
   .compare-cols .col h3 { font-style: italic; margin: 0; }
   .compare-cols .col h4 { margin: 20px 0 8px; font-size: 14px; }
+  .open-detail {
+    background: none; border: none; color: var(--accent);
+    font-size: 14px; cursor: pointer; padding: 2px 0; margin: 4px 0 12px;
+  }
+  .open-detail:hover { text-decoration: underline; }
   @media (max-width: 700px) { .compare-cols { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -171,8 +208,7 @@
     ["Substrat", "Substrat"],
     ["Samlings-nummer", "Samlingsnummer"],
     ["Underfamilj", "Underfamilj"],
-    ["Släkte", "Släkte"],
-    ["Art", "Art"],
+    ["__taxon", "Släkte/art"],
     ["Projekt", "Projekt"],
     ["ID", "ID"],
     ["Length", "Längd (bp)"],
@@ -182,12 +218,32 @@
   // Keep only Coleophora, sorted alphabetically by scientific name.
   var records = (window.DNA_DATA || [])
     .filter(function (r) { return r["Släkte"] === "Coleophora"; })
-    .map(function (r, i) { r.__i = i; return r; });
+    .map(function (r, i) {
+      r.__i = i;
+      r.__taxon = [r["Släkte"], r["Art"]].filter(Boolean).join(" ");
+      return r;
+    });
 
   records.sort(function (a, b) {
     var sa = (a["Vetenskapligt namn"] || "").toLowerCase();
     var sb = (b["Vetenskapligt namn"] || "").toLowerCase();
     return sa < sb ? -1 : sa > sb ? 1 : 0;
+  });
+
+  // URL slug per individual: the collection number when unique, otherwise
+  // "<samlingsnummer>~<ID>" so the few duplicates still get a unique link.
+  var snCount = {};
+  records.forEach(function (r) {
+    var sn = r["Samlings-nummer"];
+    if (sn) snCount[sn] = (snCount[sn] || 0) + 1;
+  });
+  var slugMap = {}, snFirst = {};
+  records.forEach(function (r) {
+    var sn = r["Samlings-nummer"];
+    r.__slug = (sn && snCount[sn] === 1) ? sn
+             : (sn ? sn + "~" + r["ID"] : r["ID"]);
+    slugMap[r.__slug] = r;
+    if (sn && !(sn in snFirst)) snFirst[sn] = r; // fallback for a bare, duplicated sn
   });
 
   var view = document.getElementById("view");
@@ -238,7 +294,7 @@
           esc(r["Provins"] || "") +
           (r["Lokalnamn"] ? '<br>' + esc(r["Lokalnamn"]) : "") +
         '</span>';
-      li.addEventListener("click", function () { renderDetail(r); });
+      li.addEventListener("click", function () { goDetail(r); });
       ul.appendChild(li);
     });
     view.innerHTML = "";
@@ -249,14 +305,21 @@
   // position. Positions where either base is N (ambiguous) are excluded.
   function coiIdentity(a, b) {
     var n = Math.min(a.length, b.length);
-    var compared = 0, match = 0;
+    var compared = 0, match = 0, missing = 0, missingA = 0, missingB = 0;
     for (var i = 0; i < n; i++) {
       var ca = a[i], cb = b[i];
-      if (ca === "N" || cb === "N") continue;
+      var na = ca === "N", nb = cb === "N";
+      if (na) missingA++;
+      if (nb) missingB++;
+      if (na || nb) { missing++; continue; }
       compared++;
       if (ca === cb) match++;
     }
-    return { pct: compared ? (match / compared * 100) : 0, diffs: compared - match, compared: compared };
+    return {
+      pct: compared ? (match / compared * 100) : 0,
+      diffs: compared - match, compared: compared,
+      missing: missing, missingA: missingA, missingB: missingB
+    };
   }
 
   var SIMILAR_STEP = 10; // how many to show initially and per "Visa fler"
@@ -272,15 +335,14 @@
   }
 
   // Split COI into groups of 10, 4 groups per row, space-separated for display only.
+  // N (ambiguous/missing) bases are shown as a dash for readability.
   function formatSeq(seq) {
+    seq = seq.replace(/N/g, "-");
     var html = "";
     var groups = [];
     for (var i = 0; i < seq.length; i += 10) groups.push(seq.slice(i, i + 10));
     for (var g = 0; g < groups.length; g += 4) {
-      var rowGroups = groups.slice(g, g + 4);
-      var pos = g * 10 + 1;
-      var posLabel = String(pos).padStart(String(seq.length).length, " ");
-      html += '<span class="pos">' + posLabel + '</span>' + esc(rowGroups.join(" ")) + "\n";
+      html += esc(groups.slice(g, g + 4).join(" ")) + "\n";
     }
     return html;
   }
@@ -299,33 +361,88 @@
     return '<dl class="fields">' + rows + link + "</dl>";
   }
 
+  function diffLabel(d) { return d + (d === 1 ? " skillnad" : " skillnader"); }
+  function idLabel(id) {
+    var s = diffLabel(id.diffs);
+    // Only count bases missing (N) on the compared individual (the second arg
+    // to coiIdentity), so the reference's own N's don't inflate every row.
+    if (id.missingB) s += " · " + id.missingB + " saknade";
+    return s;
+  }
+  function pctHtml(s) {
+    return '<span class="pct">' + s.id.pct.toFixed(1) + " %<small>" + idLabel(s.id) + "</small></span>";
+  }
+  function metaLine(rec) {
+    return esc(rec["Artnamn"] || "") +
+      (rec["Provins"] ? " · " + esc(rec["Provins"]) : "") +
+      (rec["Samlings-nummer"] ? " · " + esc(rec["Samlings-nummer"]) : "");
+  }
+
   // Renders a ranked "närmast lika" list into `container`.
+  // Entries with identical COI are collapsed into one expandable group row.
   // opts: onRowClick(rec), onCompare(rec) [adds a Jämför button], exclude(rec).
   function makeSimilarList(container, refRec, opts) {
     opts = opts || {};
     var similar = similarTo(refRec);
     if (opts.exclude) similar = similar.filter(function (s) { return s.rec !== opts.exclude; });
+
+    // Group individuals with identical COI, ignoring N (ambiguous) bases:
+    // members have 0 real differences from the group's representative, so two
+    // sequences that differ only where one has an N still count as the same.
+    var groups = [];
+    similar.forEach(function (s) {
+      var seq = s.rec["COI"] || "";
+      var g = null;
+      for (var i = 0; i < groups.length; i++) {
+        if (coiIdentity(seq, groups[i].rep).diffs === 0) { g = groups[i]; break; }
+      }
+      if (!g) { g = { pct: s.id, rep: seq, members: [] }; groups.push(g); }
+      g.members.push(s);
+    });
+
     var shown = SIMILAR_STEP;
 
     function render() {
-      var items = similar.slice(0, shown).map(function (s, k) {
-        return '<li data-sim="' + k + '">' +
+      var refs = []; // data-ref index → record
+      function refRow(s, cls) {
+        var n = refs.push(s.rec) - 1;
+        return '<li class="' + (cls || "") + '" data-ref="' + n + '">' +
           '<span class="li-main">' +
             '<span class="sci">' + esc(s.rec["Vetenskapligt namn"] || "—") + '</span>' +
-            '<span class="common">' +
-              esc(s.rec["Artnamn"] || "") +
-              (s.rec["Provins"] ? " · " + esc(s.rec["Provins"]) : "") +
-              (s.rec["Samlings-nummer"] ? " · " + esc(s.rec["Samlings-nummer"]) : "") +
-            '</span>' +
-          '</span>' +
-          '<span class="pct">' + s.id.pct.toFixed(1) + " %" +
-            "<small>" + s.id.diffs + (s.id.diffs === 1 ? " skillnad" : " skillnader") + "</small>" +
-          '</span>' +
-          (opts.onCompare ? '<button class="cmp-btn" data-cmp="' + k + '">Jämför</button>' : "") +
-        '</li>';
+            '<span class="common">' + metaLine(s.rec) + "</span>" +
+          "</span>" +
+          pctHtml(s) +
+          (opts.onCompare ? '<button class="cmp-btn" data-cmp="' + n + '">Jämför</button>' : "") +
+        "</li>";
+      }
+
+      var items = groups.slice(0, shown).map(function (g, gi) {
+        if (g.members.length === 1) return refRow(g.members[0]);
+        // Collapsed group of individuals with identical COI. The header row
+        // represents the first member (click navigates / Jämför compares it);
+        // an expand toggle reveals the rest.
+        var first = g.members[0];
+        var firstN = refs.push(first.rec) - 1;
+        var sci = {};
+        g.members.forEach(function (m) { sci[m.rec["Vetenskapligt namn"] || "—"] = 1; });
+        var names = Object.keys(sci);
+        var sciLabel = names.length === 1 ? names[0] : names.length + " arter";
+        var memberRows = g.members.map(function (m) { return refRow(m, "member"); }).join("");
+        return '<li class="sim-group">' +
+          '<div class="grouphead" data-ref="' + firstN + '">' +
+            '<span class="li-main">' +
+              '<span class="sci">' + esc(sciLabel) + "</span>" +
+              '<span class="common">' + g.members.length + " individer · identisk COI · " +
+                '<a class="expand-link" href="#" data-exp="' + gi + '">visa alla</a></span>' +
+            "</span>" +
+            '<span class="pct">' + g.pct.pct.toFixed(1) + " %<small>" + diffLabel(g.pct.diffs) + "</small></span>" +
+            (opts.onCompare ? '<button class="cmp-btn" data-cmp="' + firstN + '">Jämför</button>' : "") +
+          "</div>" +
+          '<ul class="similar nested" data-members="' + gi + '" hidden>' + memberRows + "</ul>" +
+        "</li>";
       }).join("");
 
-      var remaining = similar.length - shown;
+      var remaining = groups.length - shown;
       var more = remaining > 0
         ? '<button class="show-more" data-more="1">Visa fler (' +
             Math.min(SIMILAR_STEP, remaining) + " av " + remaining + " kvar)</button>"
@@ -334,16 +451,25 @@
       container.innerHTML = '<ul class="similar">' + items + "</ul>" + more;
 
       if (opts.onRowClick) {
-        Array.prototype.forEach.call(container.querySelectorAll("li[data-sim]"), function (li) {
-          li.addEventListener("click", function () {
-            opts.onRowClick(similar[+li.getAttribute("data-sim")].rec);
-          });
+        Array.prototype.forEach.call(container.querySelectorAll("[data-ref]"), function (el) {
+          el.addEventListener("click", function () { opts.onRowClick(refs[+el.getAttribute("data-ref")]); });
         });
       }
       Array.prototype.forEach.call(container.querySelectorAll("button[data-cmp]"), function (btn) {
         btn.addEventListener("click", function (e) {
           e.stopPropagation();
-          opts.onCompare(similar[+btn.getAttribute("data-cmp")].rec);
+          opts.onCompare(refs[+btn.getAttribute("data-cmp")]);
+        });
+      });
+      Array.prototype.forEach.call(container.querySelectorAll("[data-exp]"), function (link) {
+        link.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var ul = container.querySelector('ul[data-members="' + link.getAttribute("data-exp") + '"]');
+          if (!ul) return;
+          var wasHidden = ul.hasAttribute("hidden");
+          if (wasHidden) ul.removeAttribute("hidden"); else ul.setAttribute("hidden", "");
+          link.textContent = wasHidden ? "dölj" : "visa alla";
         });
       });
       var moreBtn = container.querySelector("button[data-more]");
@@ -365,12 +491,20 @@
       var end = Math.min(i + W, len);
       var aB = "", bB = "", tB = "";
       for (var j = i; j < end; j++) {
-        var ca = a[j] || "-", cb = b[j] || "-";
-        if (ca === cb) {
-          aB += ca; bB += cb; tB += "|";
+        var ra = a[j], rb = b[j];
+        // Show N (or a missing base) as a gap dash; these positions are
+        // ambiguous and are NOT counted as differences in the % identity.
+        var gapA = !ra || ra === "N", gapB = !rb || rb === "N";
+        var da = gapA ? "-" : ra, db = gapB ? "-" : rb;
+        if (gapA || gapB) {
+          aB += '<span class="gp">' + da + "</span>";
+          bB += '<span class="gp">' + db + "</span>";
+          tB += "~";
+        } else if (ra === rb) {
+          aB += da; bB += db; tB += "|";
         } else {
-          aB += '<span class="mm">' + ca + "</span>";
-          bB += '<span class="mm">' + cb + "</span>";
+          aB += '<span class="mm">' + da + "</span>";
+          bB += '<span class="mm">' + db + "</span>";
           tB += ".";
         }
         // Group in tens for readability (display only), no trailing group gap.
@@ -386,6 +520,35 @@
   }
 
   // Side-by-side comparison of two individuals.
+  // Wire a "copy COI" button that copies the raw sequence (no display spaces).
+  function wireCopy(btn, seq, label) {
+    if (!btn) return;
+    label = label || "Kopiera sekvens";
+    btn.addEventListener("click", function () {
+      var done = function () {
+        btn.textContent = "Kopierat ✓";
+        btn.classList.add("ok");
+        setTimeout(function () {
+          btn.textContent = label;
+          btn.classList.remove("ok");
+        }, 1500);
+      };
+      function fallbackCopy() {
+        var ta = document.createElement("textarea");
+        ta.value = seq;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(seq).then(done, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    });
+  }
+
   function renderCompare(a, b) {
     var id = coiIdentity(a["COI"] || "", b["COI"] || "");
     view.innerHTML =
@@ -394,17 +557,21 @@
         "<h2>Jämförelse</h2>" +
         '<div class="cmp-summary">' +
           '<span class="pct">' + id.pct.toFixed(1) + " % likhet · " + id.diffs +
-            " skillnader / " + id.compared + " bp</span>" +
+            " skillnader / " + id.compared + " bp" +
+            (id.missing ? " · " + id.missing + " saknade" : "") + "</span>" +
         "</div>" +
         '<div class="legend">' +
           '<span class="sw sw-mm"></span> skillnad' +
           '<span class="sw sw-eq"></span> lika' +
+          '<span class="sw sw-gp"></span> tvetydig (N, räknas ej)' +
         "</div>" +
-        '<pre class="align">' + alignHtml(a["COI"] || "", b["COI"] || "") + "</pre>" +
+        '<div class="align-wrap"><pre class="align">' + alignHtml(a["COI"] || "", b["COI"] || "") + "</pre></div>" +
         '<div class="compare-cols">' +
           '<div class="col">' +
             "<h3>" + esc(a["Vetenskapligt namn"] || "—") + "</h3>" +
             '<div class="subtitle">' + esc(a["Artnamn"] || "") + "</div>" +
+            '<button class="open-detail" id="openA">Öppna detaljsida →</button>' +
+            (a["COI"] ? '<button class="copy-btn" id="copyA">Kopiera COI</button>' : "") +
             fieldsHtml(a) +
             "<h4>Byt vänster – närmast lika</h4>" +
             '<div id="simA"></div>' +
@@ -412,6 +579,8 @@
           '<div class="col">' +
             "<h3>" + esc(b["Vetenskapligt namn"] || "—") + "</h3>" +
             '<div class="subtitle">' + esc(b["Artnamn"] || "") + "</div>" +
+            '<button class="open-detail" id="openB">Öppna detaljsida →</button>' +
+            (b["COI"] ? '<button class="copy-btn" id="copyB">Kopiera COI</button>' : "") +
             fieldsHtml(b) +
             "<h4>Byt höger – närmast lika</h4>" +
             '<div id="simB"></div>' +
@@ -419,18 +588,19 @@
         "</div>" +
       "</div>";
 
-    document.getElementById("back").addEventListener("click", function () {
-      renderList();
-      window.scrollTo(0, 0);
-    });
+    document.getElementById("back").addEventListener("click", goList);
+    document.getElementById("openA").addEventListener("click", function () { goDetail(a); });
+    document.getElementById("openB").addEventListener("click", function () { goDetail(b); });
+    wireCopy(document.getElementById("copyA"), a["COI"] || "", "Kopiera COI");
+    wireCopy(document.getElementById("copyB"), b["COI"] || "", "Kopiera COI");
 
     makeSimilarList(document.getElementById("simA"), a, {
       exclude: b,
-      onRowClick: function (o) { renderCompare(o, b); }
+      onRowClick: function (o) { goCompare(o, b); }
     });
     makeSimilarList(document.getElementById("simB"), b, {
       exclude: a,
-      onRowClick: function (o) { renderCompare(a, o); }
+      onRowClick: function (o) { goCompare(a, o); }
     });
 
     window.scrollTo(0, 0);
@@ -446,13 +616,26 @@
     }).join("");
 
     var link = r["Länk"]
-      ? '<dt>Länk</dt><dd><a href="' + esc(r["Länk"]) + '" target="_blank" rel="noopener">' + esc(r["Länk"]) + "</a></dd>"
+      ? '<dd class="link-row"><a href="' + esc(r["Länk"]) + '" target="_blank" rel="noopener">' + esc(r["Länk"]) + "</a></dd>"
       : "";
 
     var similar = similarTo(r);
-    var similarHtml = similar.length
-      ? '<div class="seq-header"><h3>Närmast lika (COI-likhet)</h3></div>' +
-        '<div id="similar-box"></div>'
+
+    var nMissing = (seq.match(/N/g) || []).length;
+    var seqBlock = seq
+      ? '<div class="seq-header">' +
+          "<h3>COI (" + seq.length + " bp" +
+            (nMissing ? " · " + nMissing + " saknas" : "") + ")</h3>" +
+          '<button class="copy-btn" id="copy">Kopiera sekvens</button>' +
+        "</div>" +
+        '<pre class="seq">' + formatSeq(seq) + "</pre>"
+      : "";
+
+    var sideCol = similar.length
+      ? '<aside class="detail-side">' +
+          '<div class="seq-header"><h3>Närmast lika (COI-likhet)</h3></div>' +
+          '<div id="similar-box"></div>' +
+        "</aside>"
       : "";
 
     view.innerHTML =
@@ -460,63 +643,68 @@
       '<div class="card">' +
         '<h2>' + esc(r["Vetenskapligt namn"] || "—") + "</h2>" +
         '<div class="subtitle">' + esc(r["Artnamn"] || "") + "</div>" +
-        '<dl class="fields">' + rows + link + "</dl>" +
-        similarHtml +
-        (seq ?
-          '<div class="seq-header">' +
-            "<h3>COI (" + seq.length + " bp)</h3>" +
-            '<button class="copy-btn" id="copy">Kopiera sekvens</button>' +
+        '<div class="detail-grid">' +
+          '<div class="detail-main">' +
+            '<dl class="fields">' + rows + link + "</dl>" +
+            seqBlock +
           "</div>" +
-          '<pre class="seq">' + formatSeq(seq) + "</pre>"
-        : "") +
+          sideCol +
+        "</div>" +
       "</div>";
 
-    document.getElementById("back").addEventListener("click", function () {
-      renderList();
-      window.scrollTo(0, 0);
-    });
+    document.getElementById("back").addEventListener("click", goList);
 
     var similarBox = document.getElementById("similar-box");
     if (similarBox) {
       makeSimilarList(similarBox, r, {
-        onRowClick: function (o) { renderDetail(o); },
-        onCompare: function (o) { renderCompare(r, o); }
+        onRowClick: function (o) { goDetail(o); },
+        onCompare: function (o) { goCompare(r, o); }
       });
     }
 
-    if (seq) {
-      var copyBtn = document.getElementById("copy");
-      copyBtn.addEventListener("click", function () {
-        // Copy the raw sequence, without the display spaces.
-        var done = function () {
-          copyBtn.textContent = "Kopierat ✓";
-          copyBtn.classList.add("ok");
-          setTimeout(function () {
-            copyBtn.textContent = "Kopiera sekvens";
-            copyBtn.classList.remove("ok");
-          }, 1500);
-        };
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(seq).then(done, fallbackCopy);
-        } else {
-          fallbackCopy();
-        }
-        function fallbackCopy() {
-          var ta = document.createElement("textarea");
-          ta.value = seq;
-          document.body.appendChild(ta);
-          ta.select();
-          try { document.execCommand("copy"); done(); } catch (e) {}
-          document.body.removeChild(ta);
-        }
-      });
-    }
+    if (seq) wireCopy(document.getElementById("copy"), seq, "Kopiera sekvens");
 
     window.scrollTo(0, 0);
   }
 
-  filterEl.addEventListener("input", renderList);
-  renderList();
+  // --- Hash-based routing (GitHub Pages friendly; survives reload & deep links) ---
+  //   #/            → list
+  //   #/i/<slug>    → detail
+  //   #/c/<a>/<b>   → comparison
+  function goList() { setHash("/"); }
+  function goDetail(rec) { setHash("/i/" + encodeURIComponent(rec.__slug)); }
+  function goCompare(a, b) { setHash("/c/" + encodeURIComponent(a.__slug) + "/" + encodeURIComponent(b.__slug)); }
+
+  function setHash(h) {
+    if (location.hash !== "#" + h) location.hash = h; // triggers hashchange → route()
+    else route();                                     // same hash: render directly
+  }
+
+  function resolve(slug) {
+    slug = decodeURIComponent(slug || "");
+    return slugMap[slug] || snFirst[slug] || null;
+  }
+
+  function route() {
+    var parts = location.hash.replace(/^#/, "").split("/").filter(Boolean);
+    if (parts[0] === "i" && parts[1]) {
+      var r = resolve(parts[1]);
+      if (r) { renderDetail(r); return; }
+    } else if (parts[0] === "c" && parts[1] && parts[2]) {
+      var a = resolve(parts[1]), b = resolve(parts[2]);
+      if (a && b) { renderCompare(a, b); return; }
+    }
+    renderList();
+  }
+
+  window.addEventListener("hashchange", route);
+
+  // Typing in the filter always returns to (and re-renders) the list.
+  filterEl.addEventListener("input", function () {
+    if (location.hash !== "#/") location.hash = "#/"; else renderList();
+  });
+
+  route();
 })();
 </script>
 </body>
