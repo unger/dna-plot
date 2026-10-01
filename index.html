@@ -94,8 +94,20 @@
   .plot-wrap .pt-n { fill: #fff; font: 600 10px/1 -apple-system, "Segoe UI", sans-serif; text-anchor: middle; pointer-events: none; }
   .plot-wrap .sbar { stroke: var(--muted); stroke-width: 2; }
   .plot-wrap .sbar-t { fill: var(--muted); font-size: 11px; }
+  .hist { margin-bottom: 18px; }
+  .hist .grid { stroke: #eeeef1; stroke-width: 1; }
+  .hist .base { stroke: #b9bcc6; stroke-width: 1; }
+  .hist .ax { fill: var(--muted); font-size: 11px; text-anchor: end; }
+  .hist .gap { stroke: #c9ccd4; stroke-width: 1; }
+  .hist .gap-t { text-anchor: middle; }
+  .hist .hit { fill: transparent; }
+  .hist .hbar { cursor: pointer; }
+  .hist .bar { fill: #2a78d6; }
+  .hist .hbar:hover .bar, .hist .hbar.hl .bar { fill: #1d5fae; }
+  .hist .cnt { fill: var(--text); font-size: 11px; text-anchor: middle; }
+  .tip-near { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; color: var(--muted); }
   .tip {
-    position: absolute; z-index: 3; pointer-events: none; max-width: 240px;
+    position: absolute; z-index: 3; pointer-events: none; max-width: 300px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
     padding: 6px 10px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.12);
   }
@@ -119,7 +131,7 @@
   .detail-side { min-width: 0; }
   @media (min-width: 820px) {
     .detail-grid { grid-template-columns: 1fr 1fr; align-items: start; }
-    .detail-side .seq-header { margin-top: 0; }
+    .detail-side .seq-header, .detail-main > .seq-header:first-child { margin-top: 0; }
   }
   dl.fields { display: grid; grid-template-columns: max-content 1fr; gap: 3px 18px; margin: 0; }
   dl.fields dt { color: var(--muted); }
@@ -768,6 +780,31 @@
     return e1.v.map(function (x, k) { return [x * s1, e2.v[k] * s2]; });
   }
 
+  // Stress-minimising MDS (SMACOF, Guttman transform) starting from `X`.
+  // Classical MDS drops everything outside its two main axes, so a pair that
+  // differs mostly "sideways" can be drawn almost on top of each other; this
+  // instead spreads the error over all pairs.
+  function smacof(D, X) {
+    var n = D.length, i, j, it;
+    if (n < 4) return X; // up to 3 points classical MDS is already exact
+    for (it = 0; it < 300; it++) {
+      var Y = [], moved = 0;
+      for (i = 0; i < n; i++) {
+        var a = 0, b = 0;
+        for (j = 0; j < n; j++) {
+          if (i === j) continue;
+          var dx = X[i][0] - X[j][0], dy = X[i][1] - X[j][1], e = Math.sqrt(dx * dx + dy * dy);
+          if (e > 1e-9) { a += D[i][j] / e * dx; b += D[i][j] / e * dy; }
+        }
+        Y.push([a / n, b / n]);
+      }
+      for (i = 0; i < n; i++) moved = Math.max(moved, Math.abs(Y[i][0] - X[i][0]), Math.abs(Y[i][1] - X[i][1]));
+      X = Y;
+      if (moved < 1e-4) break;
+    }
+    return X;
+  }
+
   // One species: clickable individuals + a scatter plot of COI differences.
   // Each point is a unique COI variant (identical individuals share a point,
   // sized by count); distance between points ≈ number of differing bases.
@@ -794,8 +831,9 @@
     return groups;
   }
 
-  // Other species ranked by closeness to `sp`: smallest COI difference between
-  // any individual of each (ties: lowest mean). Cached per species.
+  // Other species ranked by closeness to `sp`: highest COI identity (%) between
+  // any individual of each (ties: highest mean). Cached per species.
+  // `min` = differences (bp) of that closest pair.
   var nearCache = {};
   function nearestSpecies(sp) {
     if (nearCache[sp.slug]) return nearCache[sp.slug];
@@ -805,17 +843,17 @@
       if (o === sp) return;
       var theirs = o.members.filter(function (r) { return r["COI"]; });
       if (!theirs.length || !mine.length) return;
-      var min = Infinity, sum = 0, cnt = 0;
+      var best = null, sum = 0, cnt = 0;
       mine.forEach(function (a) {
         theirs.forEach(function (b) {
-          var d = coiIdentity(a["COI"], b["COI"]).diffs;
-          if (d < min) min = d;
-          sum += d; cnt++;
+          var id = coiIdentity(a["COI"], b["COI"]);
+          if (!best || id.pct > best.pct) best = id;
+          sum += id.pct; cnt++;
         });
       });
-      res.push({ sp: o, min: min, mean: sum / cnt, n: theirs.length });
+      res.push({ sp: o, pct: best.pct, min: best.diffs, mean: sum / cnt, n: theirs.length });
     });
-    res.sort(function (a, b) { return a.min - b.min || a.mean - b.mean; });
+    res.sort(function (a, b) { return b.pct - a.pct || b.mean - a.mean; });
     return (nearCache[sp.slug] = res);
   }
 
@@ -832,7 +870,12 @@
     });
     var groups = coiGroups(members, 0), gOf = {};
     groups.forEach(function (g, gi) { g.members.forEach(function (r) { gOf[r.__slug] = gi; }); });
-    var nNoCoi = members.length - Object.keys(gOf).length;
+    var nNoCoi = members.length - Object.keys(gOf).length, nMain = groups.length;
+    var hist = '<div class="seq-header"><h3>Fördelning av COI-varianter</h3></div>' +
+      '<div class="chart-note">En stapel per unik COI-variant, höjden är antal individer. ' +
+      "Avståndet mellan två grannstaplar motsvarar deras skillnad i procent (N ignoreras); " +
+      "ordningen följer släktträdet.</div>" +
+      '<div class="plot-wrap hist"><div id="hist"></div><div class="tip" id="hist-tip" hidden></div></div>';
     // Groups of the main species come first, so the rows' data-g indices stay valid.
     others.forEach(function (o, k) { groups = groups.concat(coiGroups(o.members, k + 1)); });
 
@@ -863,8 +906,8 @@
     var plot = "";
     if (groups.length >= 1) { // also for a single variant, so the species always has a plot
       plot = '<div class="seq-header"><h3>COI-skillnader</h3></div>' +
-        '<div class="chart-note">Varje punkt är en unik COI-variant; avståndet motsvarar antal ' +
-        "skillnader (bp, N ignoreras). Storleken visar antal individer med identisk COI." +
+        '<div class="chart-note">Varje punkt är en unik COI-variant; avståndet motsvarar ungefär antal ' +
+        "skillnader (bp, N ignoreras) – hovra för exakta avstånd. Storleken visar antal individer med identisk COI." +
         (others.length ? " Skalan anpassas efter största avståndet i jämförelsen." : "") + "</div>" +
         (others.length
           ? '<div class="legend-sp">' + [sp].concat(others).map(function (s, k) {
@@ -901,7 +944,7 @@
         '<div class="subtitle">' + esc(common) + (common ? " · " : "") + members.length +
           (members.length === 1 ? " individ" : " individer") + "</div>" +
         '<div class="detail-grid">' +
-          '<div class="detail-main">' + rows + "</ul></div>" +
+          '<div class="detail-main">' + (nMain ? hist : "") + rows + "</ul></div>" +
           (plot || near ? '<aside class="detail-side">' + plot + near + "</aside>" : "") +
         "</div>" +
       "</div>";
@@ -916,6 +959,7 @@
       var allNames = [sp].concat(others).map(function (s) { return s.name; });
       var hl = drawScatter(groups, items, allNames);
       if (groups.length >= 2) drawTree(groups, allNames, hl);
+      drawHist(groups.slice(0, nMain), hl);
     }
     if (near) setupNearest(sp, others);
     if (!samePage) window.scrollTo(0, 0);
@@ -938,8 +982,8 @@
           '<span class="li-main"><span class="sci">' + esc(x.sp.name) + "</span>" +
           '<span class="common">' + x.n + (x.n === 1 ? " individ" : " individer") + " med COI · " +
             '<a href="#/s/' + encodeURIComponent(x.sp.slug) + '" class="open-sp">öppna artsida →</a></span></span>' +
-          '<span class="pct">' + x.min + " bp<small>närmast · snitt " +
-            x.mean.toFixed(1).replace(".", ",") + "</small></span></li>";
+          '<span class="pct">' + x.pct.toFixed(1) + " %<small>" + diffLabel(x.min) +
+            "<br>snitt " + x.mean.toFixed(1) + " %</small></span></li>";
       }).join("");
       var rest = list.length - shown;
       box.innerHTML = '<ul class="similar near-rows">' + rows + "</ul>" +
@@ -1121,17 +1165,113 @@
     });
   }
 
+  // Bar chart of one species' COI variants: bar height = individuals, bars in
+  // tree leaf order, spaced so the gap between neighbours = their % difference.
+  function drawHist(groups, hl) {
+    var n = groups.length, i, j, D = [], order = [];
+    function pctDiff(a, b) { return 100 - coiIdentity(a.members[0]["COI"], b.members[0]["COI"]).pct; }
+    if (n >= 3) {
+      for (i = 0; i < n; i++) { D[i] = []; for (j = 0; j < n; j++) D[i][j] = i === j ? 0 : pctDiff(groups[i], groups[j]); }
+      (function leaves(nd) {
+        if (!nd.children.length) order.push(nd.id); else nd.children.forEach(leaves);
+      })(rootTree(neighborJoin(D), n));
+    } else {
+      for (i = 0; i < n; i++) order.push(i);
+    }
+    var pos = [0], gaps = [];
+    for (i = 1; i < n; i++) {
+      gaps.push(pctDiff(groups[order[i - 1]], groups[order[i]]));
+      pos.push(pos[i - 1] + gaps[i - 1]);
+    }
+    var span = pos[n - 1], minGap = n > 1 ? Math.min.apply(null, gaps) : 0;
+
+    var W = 420, H = 170, L = 30, R = 10, T = 18, B = 34, PW = W - L - R, PH = H - T - B;
+    var bw = 22, sc = 0;
+    if (span > 0) {
+      sc = (PW - bw) / span;
+      bw = Math.max(4, Math.min(22, minGap * sc - 2));
+      sc = (PW - bw) / span;
+    }
+    function cx(k) { return span > 0 ? L + bw / 2 + pos[k] * sc : L + PW / 2; }
+    var maxC = Math.max.apply(null, groups.map(function (g) { return g.members.length; }));
+    var step = 1;
+    [1, 2, 5, 10, 20, 50, 100].forEach(function (c) { if (maxC / c >= 2) step = c; });
+    var top = Math.ceil(maxC / step) * step;
+    function y(v) { return T + PH - v / top * PH; }
+
+    var grid = "";
+    for (var v = 0; v <= top; v += step) {
+      grid += '<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '"/>' +
+        '<text class="ax" x="' + (L - 6) + '" y="' + y(v).toFixed(1) + '" dy="0.35em">' + v + "</text>";
+    }
+    var bars = order.map(function (k, idx) {
+      var c = groups[k].members.length, x0 = cx(idx) - bw / 2, y0 = y(c), yb = y(0);
+      var r = Math.min(4, bw / 2, yb - y0);
+      // Hit target reaches halfway to each neighbour; count shown only when it fits.
+      var hl0 = idx > 0 ? Math.min(22, (cx(idx) - cx(idx - 1)) / 2) : 22;
+      var hr0 = idx < n - 1 ? Math.min(22, (cx(idx + 1) - cx(idx)) / 2) : 22;
+      var d = "M" + x0.toFixed(1) + "," + yb + "V" + (y0 + r).toFixed(1) +
+        "Q" + x0.toFixed(1) + "," + y0.toFixed(1) + " " + (x0 + r).toFixed(1) + "," + y0.toFixed(1) +
+        "H" + (x0 + bw - r).toFixed(1) +
+        "Q" + (x0 + bw).toFixed(1) + "," + y0.toFixed(1) + " " + (x0 + bw).toFixed(1) + "," + (y0 + r).toFixed(1) +
+        "V" + yb + "Z";
+      return '<g class="hbar" data-k="' + k + '" data-i="' + idx + '">' +
+        '<rect class="hit" x="' + (cx(idx) - hl0).toFixed(1) + '" y="' + T + '" width="' + (hl0 + hr0).toFixed(1) + '" height="' + PH + '"/>' +
+        '<path class="bar" d="' + d + '"/>' +
+        (Math.min(hl0, hr0) >= 7 ? '<text class="cnt" x="' + cx(idx).toFixed(1) + '" y="' + (y0 - 5).toFixed(1) + '">' + c + "</text>" : "") +
+        "</g>";
+    }).join("");
+    // Gap labels under the baseline, only where there is room for them.
+    function fmt(p) { return p.toFixed(p < 10 ? 2 : 1).replace(".", ",") + " %"; }
+    var gapLbl = gaps.map(function (g, idx) {
+      var a = cx(idx), b = cx(idx + 1);
+      return b - a >= 44
+        ? '<line class="gap" x1="' + (a + 1).toFixed(1) + '" x2="' + (b - 1).toFixed(1) + '" y1="' + (H - 22) + '" y2="' + (H - 22) + '"/>' +
+          '<text class="ax gap-t" x="' + ((a + b) / 2).toFixed(1) + '" y="' + (H - 8) + '">' + fmt(g) + "</text>"
+        : "";
+    }).join("");
+
+    var el = document.getElementById("hist");
+    el.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Stapeldiagram över ' + n +
+      ' unika COI-varianter">' + grid + gapLbl + bars +
+      '<line class="base" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(0) + '" y2="' + y(0) + '"/></svg>';
+
+    var tip = document.getElementById("hist-tip"), wrap = el.parentNode;
+    Array.prototype.forEach.call(el.querySelectorAll("g.hbar"), function (g) {
+      var k = +g.getAttribute("data-k"), idx = +g.getAttribute("data-i"), ms = groups[k].members;
+      g.addEventListener("mouseenter", function () {
+        g.classList.add("hl"); hl(k, true);
+        tip.innerHTML = "<strong>" + ms.length + (ms.length === 1 ? " individ" : " individer") + "</strong>" +
+          ms.slice(0, 8).map(function (r) {
+            return "<div>" + esc([r["Samlings-nummer"] || r["ID"], r["Provins"]].filter(Boolean).join(" · ")) + "</div>";
+          }).join("") + (ms.length > 8 ? "<div>+" + (ms.length - 8) + " till</div>" : "") +
+          (idx > 0 ? "<div>← " + fmt(gaps[idx - 1]) + " till vänster granne</div>" : "") +
+          (idx < n - 1 ? "<div>→ " + fmt(gaps[idx]) + " till höger granne</div>" : "");
+        tip.hidden = false;
+      });
+      g.addEventListener("mousemove", function (e) {
+        var b = wrap.getBoundingClientRect();
+        var x = e.clientX - b.left + 14, yy = e.clientY - b.top + 14;
+        if (x + tip.offsetWidth > b.width) x = e.clientX - b.left - tip.offsetWidth - 14;
+        tip.style.left = Math.max(0, x) + "px"; tip.style.top = yy + "px";
+      });
+      g.addEventListener("mouseleave", function () { g.classList.remove("hl"); hl(k, false); tip.hidden = true; });
+      g.addEventListener("click", function () { goDetail(ms[0]); });
+    });
+  }
+
   // `names` = [main species, ...compared species]; group.s says which a point is.
   function drawScatter(groups, items, names) {
-    var n = groups.length, D = [], i, j;
+    var n = groups.length, D = [], ID = [], i, j;
     for (i = 0; i < n; i++) {
-      D[i] = [];
+      D[i] = []; ID[i] = [];
       for (j = 0; j < n; j++) {
-        D[i][j] = i === j ? 0 : coiIdentity(groups[i].members[0]["COI"], groups[j].members[0]["COI"]).diffs;
+        ID[i][j] = i === j ? null : coiIdentity(groups[i].members[0]["COI"], groups[j].members[0]["COI"]);
+        D[i][j] = i === j ? 0 : ID[i][j].diffs;
       }
     }
-    var pts = mds2(D);
-    var W = 520, H = 420, P = 36;
+    var pts = smacof(D, mds2(D));
+    var W = 520, P = 20;
     var xs = pts.map(function (p) { return p[0]; }), ys = pts.map(function (p) { return p[1]; });
     var minx = Math.min.apply(null, xs), maxx = Math.max.apply(null, xs);
     var miny = Math.min.apply(null, ys), maxy = Math.max.apply(null, ys);
@@ -1140,9 +1280,11 @@
     // difference between two individuals of any species fills the plot, so
     // plots are comparable across species (1 bp always looks the same).
     // (When two species are compared, the scale grows to fit the largest distance shown.)
+    // That distance spans the full width; the height only fits the points' actual spread.
     var maxD = Math.max(maxSpeciesDiff(), 1);
     for (i = 0; i < n; i++) for (j = 0; j < n; j++) if (D[i][j] > maxD) maxD = D[i][j];
-    var scale = Math.min(W - 2 * P, H - 2 * P - 14) / maxD;
+    var scale = (W - 2 * P) / maxD;
+    var H = Math.max(160, Math.ceil(sy * scale) + 2 * P + 14);
     var ox = (W - sx * scale) / 2 - minx * scale, oy = (H - 14 - sy * scale) / 2 - miny * scale;
 
     // Scale bar: largest "nice" bp length that fits in ~30% of the width.
@@ -1174,16 +1316,33 @@
       rowsOf(k).forEach(function (li) { li.classList.toggle("hl", on); });
       var c = plotEl.querySelector('circle[data-k="' + k + '"]');
       if (c) c.classList.toggle("hl", on);
+      var hb = document.querySelector('#hist g.hbar[data-k="' + k + '"]');
+      if (hb) hb.classList.toggle("hl", on);
     }
     Array.prototype.forEach.call(plotEl.querySelectorAll("circle.pt"), function (c) {
       var k = +c.getAttribute("data-k"), ms = groups[k].members;
       function label(r) { return esc([r["Samlings-nummer"], r["Provins"]].filter(Boolean).join(" · ")); }
+      // True distance to the nearest other variant of each plotted species
+      // (the picture can only approximate these).
+      var near = names.map(function () { return null; });
+      for (var j2 = 0; j2 < n; j2++) {
+        if (j2 === k) continue;
+        var s2 = groups[j2].s;
+        if (!near[s2] || ID[k][j2].diffs < near[s2].id.diffs) near[s2] = { j: j2, id: ID[k][j2] };
+      }
+      var nearHtml = near.map(function (x, s2) {
+        if (!x) return "";
+        var r = groups[x.j].members[0];
+        return "<div>Närmast" + (names.length > 1 ? " <i>" + esc(names[s2]) + "</i>" : "") + ": " +
+          esc(r["Samlings-nummer"] || r["ID"] || "—") + " · " + x.id.diffs + " bp · " + x.id.pct.toFixed(1) + " %</div>";
+      }).join("");
       c.addEventListener("mouseenter", function () {
         setHl(k, true);
         tip.innerHTML = (names.length > 1 ? "<div><i>" + esc(names[groups[k].s]) + "</i></div>" : "") +
           "<strong>" + ms.length + (ms.length === 1 ? " individ" : " individer") + "</strong>" +
           ms.slice(0, 8).map(function (r) { return "<div>" + label(r) + "</div>"; }).join("") +
-          (ms.length > 8 ? "<div>+" + (ms.length - 8) + " till</div>" : "");
+          (ms.length > 8 ? "<div>+" + (ms.length - 8) + " till</div>" : "") +
+          (nearHtml ? '<div class="tip-near">' + nearHtml + "</div>" : "");
         tip.hidden = false;
       });
       c.addEventListener("mousemove", function (e) {
