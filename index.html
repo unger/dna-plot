@@ -79,8 +79,7 @@
   ul.species-rows li { padding: 7px 12px; margin-bottom: 6px; }
   ul.species-rows li.sp-group { display: block; padding: 0; overflow: hidden; cursor: default; }
   ul.species-rows li.sp-group:hover { border-color: var(--border); background: var(--panel); }
-  ul.species-rows li.sp-group .grouphead { padding: 7px 12px; align-items: baseline; }
-  ul.species-rows li.sp-group .grouphead .li-meta { white-space: normal; max-width: 50%; }
+  ul.species-rows li.sp-group .grouphead { padding: 7px 12px; align-items: baseline; justify-content: space-between; }
   ul.species-rows.nested {
     margin: 0; padding: 4px 8px 8px 16px; background: #fafafb;
     border-top: 1px solid var(--border);
@@ -102,10 +101,19 @@
   .tree svg { display: block; width: 100%; height: auto; }
   .tree .br { stroke: #8a95a5; stroke-width: 1.5; }
   .tree .sbar { stroke: var(--muted); stroke-width: 2; }
+  .tree .brk { stroke: var(--muted); stroke-width: 1.5; }
   .tree .sbar-t { fill: var(--muted); font-size: 11px; }
   .tree .leaf { cursor: pointer; }
   .tree .leaf text { fill: var(--text); font-size: 11px; }
   .tree .leaf:hover text { text-decoration: underline; }
+  .tree-link { color: var(--accent); font-size: 13px; white-space: nowrap; }
+  .li-meta .tree-link { font-size: 12px; margin-left: 10px; }
+  .tree .base circle { fill: var(--accent); }
+  .tree .base text { fill: var(--text); font-size: 12px; font-weight: 600; }
+  .tree .leaf .d { fill: var(--muted); }
+  .sptree { margin-top: 8px; }
+  .sptree-rows .li-meta a { margin-left: 10px; color: var(--accent); }
+  a.sort-btn, a.back { text-decoration: none; }
   .near-q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   ul.near-rows li.sel { border-color: var(--accent); background: var(--accent-soft); }
   .plot-wrap .pt:hover, .plot-wrap .pt.hl { stroke: var(--text); }
@@ -802,7 +810,7 @@
 
     var sideCol = similar.length
       ? '<aside class="detail-side">' +
-          '<div class="seq-header"><h3>Närmast lika (COI-likhet)</h3></div>' +
+          '<div class="seq-header"><h3>Närmast lika (COI-likhet)</h3>' + variantTreeLink(r) + "</div>" +
           '<div id="similar-box"></div>' +
         "</aside>"
       : "";
@@ -813,7 +821,8 @@
         '<h2>' + esc(r["Vetenskapligt namn"] || "—") + "</h2>" +
         '<div class="subtitle">' + esc(r["Artnamn"] || "") +
           (r["Artnamn"] ? " · " : "") +
-          '<a class="species-link" href="#/s/' + encodeURIComponent(speciesByName[r.__species].slug) + '">Visa art →</a></div>' +
+          '<a class="species-link" href="#/s/' + encodeURIComponent(speciesByName[r.__species].slug) + '">Visa art →</a>' +
+          (r["COI"] ? ' · <a class="species-link" href="' + variantTreeHash(r) + '">Visa individträd →</a>' : "") + "</div>" +
         '<div class="detail-grid">' +
           '<div class="detail-main">' +
             '<dl class="fields">' + rows + link + "</dl>" +
@@ -993,7 +1002,7 @@
           '<span class="common">' + esc([r["Provins"], r["Lokalnamn"]].filter(Boolean).join(" · ")) +
             (g === undefined ? " · saknar COI" : "") + "</span>" +
         "</span>" +
-        '<span class="li-meta">' + esc(r["Startdatum"] || "") + "</span>" +
+        '<span class="li-meta">' + esc(r["Startdatum"] || "") + variantTreeLink(r, "träd →") + "</span>" +
       "</li>";
     }
     // Individuals with identical COI (same variant group) within a taxon are
@@ -1022,15 +1031,16 @@
           // Unique provinces / locality names, listed when few enough to read at a glance.
           provs = Object.keys(provs); locs = Object.keys(locs);
           var provTxt = provs.length <= MAX_GROUP_NAMES ? provs.join(" · ") : provs.length + " landskap";
-          var span = locs.length <= MAX_GROUP_NAMES ? locs.join(", ") : locs.length + " lokaler";
+          var locTxt = locs.length <= MAX_GROUP_NAMES ? locs.join(", ") : locs.length + " lokaler";
+          var place = [provTxt, locTxt].filter(Boolean).join(" · ");
           return '<li class="sp-group" data-g="' + g + '">' +
             '<div class="grouphead" data-ref="' + members.indexOf(ms[0]) + '">' +
               '<span class="li-main">' +
                 '<span class="sn">' + ms.length + " individer · identisk COI</span>" +
-                '<span class="common">' + esc(provTxt) + (provs.length ? " · " : "") +
+                '<span class="common">' + esc(place) + (place ? " · " : "") +
                   '<a class="expand-link" href="#" data-exp="' + g + '">' + (open ? "dölj" : "visa alla") + "</a></span>" +
               "</span>" +
-              '<span class="li-meta">' + esc(span) + "</span>" +
+              '<span class="li-meta">' + variantTreeLink(ms[0], "träd →") + "</span>" +
             "</div>" +
             '<ul class="list species-rows nested"' + (open ? "" : " hidden") + ">" +
               ms.map(function (r) { return memberRow(r, false); }).join("") + "</ul>" +
@@ -1056,15 +1066,20 @@
             '<div class="chart-note">Neighbour joining på samma unika COI-varianter, rotat i mittpunkten. ' +
             "Grenlängd i bp (N ignoreras); (+n) = fler individer med identisk COI.</div>" +
             '<div class="tree" id="tree"></div>'
+          : "") +
+        // The page's own (blue) species, listed just above the plotted others' lines.
+        (others.length
+          ? '<div class="chart-note"><span class="sw-dot" style="background:' + SPECIES_COLORS[0] + '"></span>' +
+            "<i>" + esc(sp.name) + "</i></div>"
           : "");
     }
 
     // Nearest species (search box filters by name; click plots the species above).
     var near = sp.members.some(function (r) { return r["COI"]; })
-      ? '<div class="seq-header"><h3>Närmaste arter</h3></div>' +
+      ? '<div class="seq-header"><h3>Närmaste arter</h3>' + treeLink(sp) + "</div>" +
         others.map(function (o, k) {
           return '<div class="chart-note"><span class="sw-dot" style="background:' + SPECIES_COLORS[k + 1] + '"></span>' +
-            "Plottar <i>" + esc(o.name) + "</i> · " +
+            "<i>" + esc(o.name) + "</i> · " +
             '<a href="#/s/' + encodeURIComponent(o.slug) + '">öppna artsida →</a> · ' +
             '<a href="' + speciesHash(sp, others.filter(function (x) { return x !== o; })) + '">ta bort</a></div>';
         }).join("") +
@@ -1088,7 +1103,10 @@
     var main = view.querySelector(".detail-main");
     var items = Array.prototype.slice.call(main.querySelectorAll("[data-g]"));
     Array.prototype.forEach.call(main.querySelectorAll("[data-ref]"), function (el) {
-      el.addEventListener("click", function () { goDetail(members[+el.getAttribute("data-ref")]); });
+      el.addEventListener("click", function (e) {
+        if (e.target.closest(".tree-link")) { e.stopPropagation(); return; } // follows its own href
+        goDetail(members[+el.getAttribute("data-ref")]);
+      });
     });
     Array.prototype.forEach.call(main.querySelectorAll("[data-exp]"), function (link) {
       link.addEventListener("click", function (e) {
@@ -1527,13 +1545,377 @@
     return setHl;
   }
 
+  // --- Species tree page (#/t/<art>) ---
+  // The base species plus its n nearest species (as in "Närmaste arter"),
+  // joined by neighbour joining on the % difference of each pair's closest
+  // individuals, rooted in the base so relatives branch out to the right.
+  var TREE_COUNTS = [5, 10, 15, 20, 30], TREE_DEFAULT = 10;
+
+  function treeLink(sp) {
+    return '<a class="tree-link" href="' + treeHash(sp) + '">Artträd →</a>';
+  }
+
+  var spDistCache = {};
+  function speciesDist(a, b) { // % difference of the closest pair of individuals
+    var key = a.slug < b.slug ? a.slug + "|" + b.slug : b.slug + "|" + a.slug;
+    if (key in spDistCache) return spDistCache[key];
+    var best = 0;
+    a.members.forEach(function (x) {
+      if (!x["COI"]) return;
+      b.members.forEach(function (y) {
+        if (!y["COI"]) return;
+        var p = coiIdentity(x["COI"], y["COI"]).pct;
+        if (p > best) best = p;
+      });
+    });
+    return (spDistCache[key] = 100 - best);
+  }
+
+  // Root an undirected NJ tree in leaf `id`; returns nested { id, len, children }.
+  function rootAtLeaf(edges, id) {
+    var adj = {};
+    edges.forEach(function (e) {
+      (adj[e[0]] = adj[e[0]] || []).push({ to: e[1], len: e[2] });
+      (adj[e[1]] = adj[e[1]] || []).push({ to: e[0], len: e[2] });
+    });
+    function build(x, from, l) {
+      var kids = (adj[x] || []).filter(function (nb) { return nb.to !== from; });
+      return { id: x, len: l, children: kids.map(function (nb) { return build(nb.to, x, nb.len); }) };
+    }
+    return build(id, null, 0);
+  }
+
+  function shortName(name) { return name.replace(/^(\S)\S*\s+/, "$1. "); }
+  function fmtPct(v) { return (v < 10 ? v.toFixed(1) : v.toFixed(0)) + " %"; }
+
+  function renderSpeciesTree(base, count) {
+    var near = nearestSpecies(base).slice(0, count);
+    var taxa = [base].concat(near.map(function (x) { return x.sp; }));
+    var common = commonName(base);
+    var counts = '<div class="sort-bar"><span class="lbl">Antal arter:</span>' + TREE_COUNTS.map(function (c) {
+      return '<a class="sort-btn' + (c === count ? " on" : "") + '" href="' + treeHash(base, c) + '">' + c + "</a>";
+    }).join("") + "</div>";
+    var rows = near.map(function (x, k) {
+      return '<li data-k="' + (k + 1) + '">' +
+        '<span class="li-main"><span class="sci">' + esc(x.sp.name) + "</span>" +
+          '<span class="common">' + esc(commonName(x.sp)) + "</span></span>" +
+        '<span class="li-meta"><strong>' + fmtPct(100 - x.pct) + "</strong> · " + diffLabel(x.min) +
+          '<a href="#/s/' + encodeURIComponent(x.sp.slug) + '">artsida →</a></span>' +
+      "</li>";
+    }).join("");
+
+    view.innerHTML =
+      '<a class="back" href="#/s/' + encodeURIComponent(base.slug) + '">&larr; Till artsidan</a>' +
+      '<div class="card">' +
+        "<h2>Artträd: <i>" + esc(base.name) + "</i></h2>" +
+        '<div class="subtitle">' + esc(common) + (common ? " · " : "") + near.length + " närmaste arter</div>" +
+        (near.length
+          ? counts +
+            '<div class="chart-note">Neighbour joining på arternas COI-skillnad (%, närmaste paret individer, N ignoreras), ' +
+            "rotat i <i>" + esc(base.name) + "</i>. Procent efter namnet = skillnad mot basarten. " +
+            "Klicka på en art för att utgå från den.</div>" +
+            '<div class="tree sptree" id="sptree"></div>' +
+            '<div class="seq-header"><h3>Arter i trädet</h3></div>' +
+            '<ul class="list species-rows sptree-rows">' + rows + "</ul>"
+          : '<p class="empty">Arten saknar COI, så inget träd kan visas.</p>') +
+      "</div>";
+
+    if (near.length) drawSpeciesTree(taxa, near, count);
+    Array.prototype.forEach.call(view.querySelectorAll(".sptree-rows li"), function (li) {
+      li.addEventListener("click", function (e) {
+        if (e.target.closest("a")) return; // "artsida →" link
+        setHash(treeHash(taxa[+li.getAttribute("data-k")], count).slice(1));
+      });
+    });
+    window.scrollTo(0, 0);
+  }
+
+  function drawSpeciesTree(taxa, near, count) {
+    var n = taxa.length, D = [], i, j;
+    for (i = 0; i < n; i++) {
+      D[i] = [];
+      for (j = 0; j < n; j++) D[i][j] = i === j ? 0 : speciesDist(taxa[i], taxa[j]);
+    }
+    drawRootedTree("sptree", D, taxa.map(function (t, k) {
+      return {
+        name: shortName(t.name),
+        dist: k ? fmtPct(100 - near[k - 1].pct) : "",
+        title: t.name + (k ? " – klicka för att utgå från denna art" : ""),
+        color: SPECIES_COLORS[1]
+      };
+    }), "Artträd från " + taxa[0].name, function (k) {
+      setHash(treeHash(taxa[k], count).slice(1));
+    });
+  }
+
+  // Rectangular tree rooted in leaf 0 (drawn as the root on the left, other
+  // leaves branching out to the right). D = pairwise distances in %.
+  // nodes[k] = { pre, name, dist, title, color }; onPick(k) on leaf click.
+  function drawRootedTree(elId, D, nodes, aria, onPick) {
+    var root = rootAtLeaf(neighborJoin(D), 0);
+    var ROW = 22, TOP = 10, W = 640, PAD = 4, GAP = 11; // GAP: dot → label
+    var row = 0, maxDepth = 0;
+    (function layout(nd, depth) {
+      nd.x = depth; if (depth > maxDepth) maxDepth = depth;
+      if (!nd.children.length) { nd.y = row++; return; }
+      nd.children.forEach(function (c) { layout(c, depth + c.len); });
+      nd.y = (nd.children[0].y + nd.children[nd.children.length - 1].y) / 2;
+    })(root, 0);
+    var H = TOP + row * ROW + 30;
+    function Y(v) { return (TOP + v * ROW + ROW / 2).toFixed(1); }
+    function label(o) {
+      return (o.pre ? esc(o.pre) + " " : "") + '<tspan font-style="italic">' + esc(o.name) + "</tspan>" +
+        (o.dist ? ' <tspan class="d">' + esc(o.dist) + "</tspan>" : "");
+    }
+
+    // The base's label sits left of the root and the others right of their
+    // leaves, so the margins are the label widths: estimated first, then
+    // measured from the rendered text and redrawn to drop unused space.
+    // The base's own branch (root → first split) only says how far the base is
+    // from all the rest; when long it is drawn shortened (STEM px, with a //
+    // break and its true length) so the structure among the others gets the room.
+    var STEM = 30, stem = root.children.length === 1 && root.children[0].children.length ? root.children[0].len : 0;
+    if (stem < maxDepth * 0.15) stem = 0;
+    function svg(left, right) {
+      var avail = W - left - right - (stem ? STEM : 0);
+      var sc = avail / Math.max(maxDepth - stem, 1e-6);
+      function X(v) { // v = 0 only at the root (the base)
+        return (!stem ? left + v * sc : v === 0 ? left : left + STEM + (v - stem) * sc).toFixed(1);
+      }
+      var lines = "", leaves = "";
+      if (stem) {
+        var mx = left + STEM / 2, my = +Y(root.y);
+        lines += '<line class="brk" x1="' + (mx - 5) + '" x2="' + (mx - 1) + '" y1="' + (my + 5) + '" y2="' + (my - 5) + '"/>' +
+          '<line class="brk" x1="' + (mx + 1) + '" x2="' + (mx + 5) + '" y1="' + (my + 5) + '" y2="' + (my - 5) + '"/>' +
+          '<text class="sbar-t" x="' + mx + '" y="' + (my - 8) + '" text-anchor="middle">' + fmtPct(stem) + "</text>";
+      }
+      (function draw(nd, parentX) {
+        if (parentX !== null) lines += '<line class="br" x1="' + X(parentX) + '" x2="' + X(nd.x) + '" y1="' + Y(nd.y) + '" y2="' + Y(nd.y) + '"/>';
+        if (nd.children.length > 1) {
+          lines += '<line class="br" x1="' + X(nd.x) + '" x2="' + X(nd.x) + '" y1="' + Y(nd.children[0].y) + '" y2="' + Y(nd.children[nd.children.length - 1].y) + '"/>';
+        }
+        nd.children.forEach(function (c) { draw(c, nd.x); });
+        if (nd === root) {
+          leaves += '<g class="base"><title>' + esc(nodes[0].title) + "</title>" +
+            '<circle cx="' + X(nd.x) + '" cy="' + Y(nd.y) + '" r="6"/>' +
+            '<text x="' + (+X(nd.x) - GAP) + '" y="' + Y(nd.y) + '" dy="0.35em" text-anchor="end">' + label(nodes[0]) + "</text></g>";
+        } else if (!nd.children.length) {
+          var o = nodes[nd.id];
+          leaves += '<g class="leaf" data-k="' + nd.id + '"><title>' + esc(o.title) + "</title>" +
+            '<circle cx="' + X(nd.x) + '" cy="' + Y(nd.y) + '" r="4.5" style="fill:' + o.color + '"/>' +
+            '<text x="' + (+X(nd.x) + GAP - 2) + '" y="' + Y(nd.y) + '" dy="0.35em">' + label(o) + "</text></g>";
+        }
+      })(root, null);
+
+      // Scale bar for branch lengths (%).
+      var nice = 0.1;
+      [0.1, 0.2, 0.5, 1, 2, 5, 10, 20].forEach(function (c) { if (c * sc <= W * 0.25) nice = c; });
+      var by = H - 12;
+      var bar = '<line class="sbar" x1="' + left + '" x2="' + (left + nice * sc).toFixed(1) + '" y1="' + by + '" y2="' + by + '"/>' +
+        '<text class="sbar-t" x="' + (left + nice * sc + 6).toFixed(1) + '" y="' + by + '" dy="0.35em">' + nice + " %</text>";
+      return { treeRight: +X(maxDepth), html: '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(aria) + '">' +
+        lines + leaves + bar + "</svg>" };
+    }
+
+    var baseText = (nodes[0].pre ? nodes[0].pre + " " : "") + nodes[0].name;
+    var left = PAD + baseText.length * 7 + GAP, right = 230;
+    var el = document.getElementById(elId), out = svg(left, right);
+    el.innerHTML = out.html;
+    var baseEl = el.querySelector(".base text");
+    if (baseEl && baseEl.getComputedTextLength) {
+      // Right margin: the label overhang past the tree's right edge, worst leaf.
+      var over = 0;
+      Array.prototype.forEach.call(el.querySelectorAll(".leaf text"), function (t) {
+        var end = +t.getAttribute("x") + t.getComputedTextLength();
+        if (end - out.treeRight > over) over = end - out.treeRight;
+      });
+      left = PAD + baseEl.getComputedTextLength() + GAP;
+      el.innerHTML = svg(left, over + PAD).html;
+    }
+    Array.prototype.forEach.call(el.querySelectorAll("g.leaf"), function (g) {
+      g.addEventListener("click", function () { onPick(+g.getAttribute("data-k")); });
+    });
+  }
+
+  // --- Individual tree page (#/v/<individ>) ---
+  // Like the species tree, but per unique COI variant across all species
+  // (identical COI, N ignored, = one node), so split species show as clusters.
+  var VTREE_COUNTS = [10, 20, 30, 50], VTREE_DEFAULT = 20;
+  var VTREE_THRESHOLDS = [0, 1, 2, 3, 4, 5], VTREE_T_DEFAULT = 2;
+  var MIXED_COLOR = "#8a95a5"; // cluster spanning several species
+
+  var variantCache = null; // { groups, of: slug → group index, M: pairwise coiIdentity }
+  function allVariants() {
+    if (variantCache) return variantCache;
+    var groups = coiGroups(records, 0), of = {}, M = [], i, j;
+    groups.forEach(function (g, gi) { g.members.forEach(function (r) { of[r.__slug] = gi; }); });
+    for (i = 0; i < groups.length; i++) M[i] = [];
+    for (i = 0; i < groups.length; i++) {
+      for (j = i + 1; j < groups.length; j++) {
+        M[i][j] = M[j][i] = coiIdentity(groups[i].members[0]["COI"], groups[j].members[0]["COI"]);
+      }
+    }
+    return (variantCache = { groups: groups, of: of, M: M });
+  }
+
+  // Single-linkage clusters of the exact variants: two variants share a cluster
+  // when a chain of variants, each ≤ t differences from the next, joins them.
+  // spread = largest difference (bp) between two variants inside the cluster.
+  var clusterCache = {};
+  function variantClusters(t) {
+    if (clusterCache[t]) return clusterCache[t];
+    var V = allVariants(), n = V.groups.length, par = [], i, j;
+    for (i = 0; i < n; i++) par[i] = i;
+    function find(x) { while (par[x] !== x) x = par[x] = par[par[x]]; return x; }
+    for (i = 0; i < n; i++) for (j = i + 1; j < n; j++) {
+      if (V.M[i][j].diffs <= t) par[find(i)] = find(j);
+    }
+    var byRoot = {}, clusters = [], of = [];
+    for (i = 0; i < n; i++) {
+      var r = find(i), c = byRoot[r];
+      if (!c) { c = byRoot[r] = { vars: [], members: [], spread: 0 }; clusters.push(c); }
+      c.vars.forEach(function (k) { if (V.M[i][k].diffs > c.spread) c.spread = V.M[i][k].diffs; });
+      c.vars.push(i);
+      c.members = c.members.concat(V.groups[i].members);
+      of[i] = clusters.indexOf(c);
+    }
+    return (clusterCache[t] = { clusters: clusters, of: of });
+  }
+  // Closest pair of variants between two clusters (identity with the highest %).
+  function clusterDist(a, b) {
+    var M = allVariants().M, best = null;
+    a.vars.forEach(function (i) {
+      b.vars.forEach(function (j) { if (!best || M[i][j].pct > best.pct) best = M[i][j]; });
+    });
+    return best;
+  }
+
+  function variantTreeLink(rec, text) {
+    return rec["COI"] ? '<a class="tree-link" href="' + variantTreeHash(rec) + '">' + (text || "Individträd →") + "</a>" : "";
+  }
+
+  // Label bits for a cluster: a collection number (+ others, spread) and species.
+  function clusterInfo(c, first) {
+    first = first || c.members[0];
+    var sp = {};
+    c.members.forEach(function (r) { sp[r.__species] = 1; });
+    sp = Object.keys(sp);
+    var extra = [];
+    if (c.members.length > 1) extra.push("+" + (c.members.length - 1));
+    return {
+      sn: (first["Samlings-nummer"] || first["ID"] || "—") + (extra.length ? " (" + extra.join(", ") + ")" : ""),
+      species: sp,
+      spLabel: sp.length === 1 ? shortName(sp[0]) : sp.length + " arter"
+    };
+  }
+
+  function renderVariantTree(rec, count, t) {
+    var V = allVariants(), vi = V.of[rec.__slug];
+    if (vi === undefined) {
+      view.innerHTML = '<a class="back" href="#/i/' + encodeURIComponent(rec.__slug) + '">&larr; Till individen</a>' +
+        '<div class="card"><p class="empty">Individen saknar COI, så inget träd kan visas.</p></div>';
+      return;
+    }
+    var C = variantClusters(t), base = C.clusters[C.of[vi]];
+    var near = C.clusters.filter(function (c) { return c !== base; })
+      .map(function (c) { return { c: c, id: clusterDist(base, c) }; })
+      .sort(function (a, b) { return b.id.pct - a.id.pct; })
+      .slice(0, count);
+    var cs = [base].concat(near.map(function (x) { return x.c; }));
+    var baseSp = rec.__species;
+    function colorOf(info) {
+      if (info.species.length > 1) return MIXED_COLOR;
+      return info.species[0] === baseSp ? SPECIES_COLORS[0] : SPECIES_COLORS[1];
+    }
+    function bar(label, opts, cur, href) {
+      return '<div class="sort-bar"><span class="lbl">' + label + "</span>" + opts.map(function (o) {
+        return '<a class="sort-btn' + (o === cur ? " on" : "") + '" href="' + href(o) + '">' + o + "</a>";
+      }).join("") + "</div>";
+    }
+    var controls =
+      bar("Antal noder:", VTREE_COUNTS, count, function (o) { return variantTreeHash(rec, o, t); }) +
+      bar("Gruppera vid ≤ skillnader (bp):", VTREE_THRESHOLDS, t, function (o) { return variantTreeHash(rec, count, o); });
+
+    var rows = near.map(function (x, k) {
+      var info = clusterInfo(x.c), sns = x.c.members.map(function (r) { return r["Samlings-nummer"] || r["ID"]; });
+      return '<li data-k="' + (k + 1) + '">' +
+        '<span class="li-main"><span class="sci">' + esc(info.species.join(", ")) + "</span>" +
+          '<span class="common">' + esc(sns.slice(0, 6).join(", ") + (sns.length > 6 ? " +" + (sns.length - 6) : "")) +
+            (x.c.spread ? " · inbördes ≤" + x.c.spread + " bp" : "") + "</span></span>" +
+        '<span class="li-meta"><strong>' + fmtPct(100 - x.id.pct) + "</strong> · " + diffLabel(x.id.diffs) +
+          '<a href="#/i/' + encodeURIComponent(x.c.members[0].__slug) + '">individ →</a></span>' +
+      "</li>";
+    }).join("");
+
+    view.innerHTML =
+      '<a class="back" href="#/i/' + encodeURIComponent(rec.__slug) + '">&larr; Till individen</a>' +
+      '<div class="card">' +
+        "<h2>Individträd: " + esc(rec["Samlings-nummer"] || rec["ID"] || "—") +
+          (rec.__taxon ? " (<i>" + esc(rec.__taxon) + "</i>)" : "") + "</h2>" +
+        '<div class="subtitle">' + esc([rec["Provins"], rec["Lokalnamn"], rec["Startdatum"]].filter(Boolean).join(" · ")) + "</div>" +
+        '<div class="subtitle">' +
+          [rec.__taxon === baseSp ? "" : "<i>" + esc(baseSp) + "</i>", // only when it differs from Släkte/art
+           base.members.length > 1 ? base.members.length + " individer i samma nod" : "",
+           near.length + " närmaste noder"].filter(Boolean).join(" · ") + "</div>" +
+        controls +
+        '<div class="chart-note">Neighbour joining på unika COI-varianter, rotat i basindividen (N ignoreras). ' +
+          (t ? "Varianter som via en kedja ligger inom " + t + " bp från varandra slås ihop till en nod; " +
+               "avstånd mellan noder = närmaste paret. "
+             : "Identisk COI = en nod. ") +
+          "Procent efter namnet = skillnad mot basen; (+n) = fler individer i noden. " +
+          '<span class="sw-dot" style="background:' + SPECIES_COLORS[0] + '"></span><i>' + esc(baseSp) + "</i> " +
+          '<span class="sw-dot" style="background:' + SPECIES_COLORS[1] + '; margin-left: 8px"></span>andra arter ' +
+          '<span class="sw-dot" style="background:' + MIXED_COLOR + '; margin-left: 8px"></span>flera arter i noden. ' +
+          "Klicka på en nod för att utgå från den.</div>" +
+        '<div class="tree sptree" id="vtree"></div>' +
+        '<div class="seq-header"><h3>Noder i trädet</h3></div>' +
+        '<ul class="list species-rows sptree-rows">' + rows + "</ul>" +
+      "</div>";
+
+    var n = cs.length, D = [], i, j;
+    for (i = 0; i < n; i++) {
+      D[i] = [];
+      for (j = 0; j < n; j++) D[i][j] = i === j ? 0 : 100 - clusterDist(cs[i], cs[j]).pct;
+    }
+    function pick(k) { setHash(variantTreeHash(cs[k].members[0], count, t).slice(1)); }
+    drawRootedTree("vtree", D, cs.map(function (c, k) {
+      var info = clusterInfo(c, k ? null : rec);
+      return {
+        pre: info.sn,
+        name: info.spLabel,
+        dist: k ? fmtPct(100 - near[k - 1].id.pct) : "",
+        title: info.species.join(", ") + " – " + c.members.map(function (r) { return r["Samlings-nummer"] || r["ID"]; }).join(", ") +
+          (k ? " – klicka för att utgå från denna nod" : ""),
+        color: colorOf(info)
+      };
+    }), "Individträd från " + (rec["Samlings-nummer"] || rec["ID"]), pick);
+    Array.prototype.forEach.call(view.querySelectorAll(".sptree-rows li"), function (li) {
+      li.addEventListener("click", function (e) {
+        if (e.target.closest("a")) return; // "individ →" link
+        pick(+li.getAttribute("data-k"));
+      });
+    });
+    window.scrollTo(0, 0);
+  }
+
   // --- Hash-based routing (GitHub Pages friendly; survives reload & deep links) ---
   //   #/            → species list
   //   #/s/<art>     → species (individuals + COI scatter plot + nearest species)
   //   #/s/<a>/<b>   → the same, with species b plotted alongside a
   //   #/i/<slug>    → individual detail
   //   #/c/<a>/<b>   → comparison
+  //   #/t/<art>[/<n>] → species tree from <art> and its n nearest species
+  //   #/v/<slug>[/<n>[/<t>]] → tree of COI variants from an individual and its n nearest
+  //                         nodes, variants within t differences grouped
   function goList() { setHash("/"); }
+  function variantTreeHash(rec, n, t) {
+    n = n || VTREE_DEFAULT; if (t === undefined) t = VTREE_T_DEFAULT; // 0 is a valid threshold
+    return "#/v/" + encodeURIComponent(rec.__slug) +
+      (n !== VTREE_DEFAULT || t !== VTREE_T_DEFAULT ? "/" + n + (t !== VTREE_T_DEFAULT ? "/" + t : "") : "");
+  }
+  function treeHash(sp, n) {
+    return "#/t/" + encodeURIComponent(sp.slug) + (n && n !== TREE_DEFAULT ? "/" + n : "");
+  }
   function speciesHash(sp, others) {
     return "#/s/" + [sp].concat(others || []).map(function (s) { return encodeURIComponent(s.slug); }).join("/");
   }
@@ -1561,6 +1943,15 @@
         if (o && o !== sp && others.indexOf(o) === -1) others.push(o);
       });
       if (sp) { renderSpecies(sp, others); return; }
+    } else if (parts[0] === "t" && parts[1]) {
+      var base = speciesMap[decodeURIComponent(parts[1])];
+      var cnt = TREE_COUNTS.indexOf(+parts[2]) !== -1 ? +parts[2] : TREE_DEFAULT;
+      if (base) { renderSpeciesTree(base, cnt); return; }
+    } else if (parts[0] === "v" && parts[1]) {
+      var vr = resolve(parts[1]);
+      var vc = VTREE_COUNTS.indexOf(+parts[2]) !== -1 ? +parts[2] : VTREE_DEFAULT;
+      var vt = VTREE_THRESHOLDS.indexOf(+parts[3]) !== -1 ? +parts[3] : VTREE_T_DEFAULT;
+      if (vr) { renderVariantTree(vr, vc, vt); return; }
     } else if (parts[0] === "i" && parts[1]) {
       var r = resolve(parts[1]);
       if (r) { renderDetail(r); return; }
