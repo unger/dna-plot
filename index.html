@@ -124,6 +124,7 @@
   .hist .hbar:hover .bar, .hist .hbar.hl .bar { fill: #1d5fae; }
   .hist .cnt { fill: var(--text); font-size: 11px; text-anchor: middle; }
   .tip-near { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; color: var(--muted); }
+  .tip-hint { color: var(--muted); font-style: italic; margin-top: 4px; }
   .tip {
     position: absolute; z-index: 3; pointer-events: none; max-width: 300px;
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -1050,7 +1051,7 @@
           : "") +
         '<div class="plot-wrap"><div id="plot"></div><div class="tip" id="tip" hidden></div></div>' +
         (nNoCoi ? '<div class="chart-note">' + nNoCoi + " individ(er) saknar COI och visas inte.</div>" : "") +
-        (groups.length >= 2
+        (groups.length >= 3 // with two variants the midpoint-rooted tree is just two equal branches
           ? '<div class="seq-header"><h3>Släktträd</h3></div>' +
             '<div class="chart-note">Neighbour joining på samma unika COI-varianter, rotat i mittpunkten. ' +
             "Grenlängd i bp (N ignoreras); (+n) = fler individer med identisk COI.</div>" +
@@ -1104,7 +1105,7 @@
     if (groups.length >= 1) {
       var allNames = [sp].concat(others).map(function (s) { return s.name; });
       var hl = drawScatter(groups, items, allNames);
-      if (groups.length >= 2) drawTree(groups, allNames, hl);
+      if (groups.length >= 3) drawTree(groups, allNames, hl);
       drawHist(groups.slice(0, nMain), hl);
     }
     if (near) setupNearest(sp, others);
@@ -1311,6 +1312,41 @@
     });
   }
 
+  // Tooltip for a chart mark. Mouse: hover shows `tip` beside the pointer, click
+  // opens. Touch (no hover): first tap shows it, a second tap on the same mark
+  // opens, a tap anywhere else closes. show(touch) fills tip.innerHTML.
+  var touchTip = null; // { el, close } of the tooltip opened by a tap
+  document.addEventListener("click", function () { if (touchTip) touchTip.close(); });
+  function touchHint(touch) {
+    return touch ? '<div class="tip-hint">Tryck igen för att öppna</div>' : "";
+  }
+  function chartTip(el, wrap, tip, show, hide, open) {
+    var byTouch = false;
+    function place(cx, cy) {
+      var b = wrap.getBoundingClientRect();
+      var x = cx - b.left + 14, y = cy - b.top + 14;
+      if (x + tip.offsetWidth > b.width) x = cx - b.left - tip.offsetWidth - 14;
+      tip.style.left = Math.max(0, x) + "px"; tip.style.top = y + "px";
+    }
+    function close() { hide(); tip.hidden = true; if (touchTip && touchTip.el === el) touchTip = null; }
+    el.addEventListener("pointerenter", function (e) {
+      if (e.pointerType !== "mouse") return;
+      show(false); tip.hidden = false; place(e.clientX, e.clientY);
+    });
+    el.addEventListener("pointermove", function (e) { if (e.pointerType === "mouse") place(e.clientX, e.clientY); });
+    el.addEventListener("pointerleave", function (e) { if (e.pointerType === "mouse") close(); });
+    el.addEventListener("pointerdown", function (e) { byTouch = e.pointerType !== "mouse"; });
+    el.addEventListener("click", function (e) {
+      if (!byTouch || (touchTip && touchTip.el === el)) { if (touchTip) touchTip.close(); open(); return; }
+      e.stopPropagation();
+      if (touchTip) touchTip.close();
+      touchTip = { el: el, close: close };
+      show(true); tip.hidden = false;
+      var r = el.getBoundingClientRect();
+      place(r.left + r.width / 2, r.top + r.height / 2);
+    });
+  }
+
   // Bar chart of one species' COI variants: bar height = individuals, bars in
   // tree leaf order, spaced so the gap between neighbours = their % difference.
   function drawHist(groups, hl) {
@@ -1385,24 +1421,15 @@
     var tip = document.getElementById("hist-tip"), wrap = el.parentNode;
     Array.prototype.forEach.call(el.querySelectorAll("g.hbar"), function (g) {
       var k = +g.getAttribute("data-k"), idx = +g.getAttribute("data-i"), ms = groups[k].members;
-      g.addEventListener("mouseenter", function () {
+      chartTip(g, wrap, tip, function (touch) {
         g.classList.add("hl"); hl(k, true);
         tip.innerHTML = "<strong>" + ms.length + (ms.length === 1 ? " individ" : " individer") + "</strong>" +
           ms.slice(0, 8).map(function (r) {
             return "<div>" + esc([r["Samlings-nummer"] || r["ID"], r["Provins"]].filter(Boolean).join(" · ")) + "</div>";
           }).join("") + (ms.length > 8 ? "<div>+" + (ms.length - 8) + " till</div>" : "") +
           (idx > 0 ? "<div>← " + fmt(gaps[idx - 1]) + " till vänster granne</div>" : "") +
-          (idx < n - 1 ? "<div>→ " + fmt(gaps[idx]) + " till höger granne</div>" : "");
-        tip.hidden = false;
-      });
-      g.addEventListener("mousemove", function (e) {
-        var b = wrap.getBoundingClientRect();
-        var x = e.clientX - b.left + 14, yy = e.clientY - b.top + 14;
-        if (x + tip.offsetWidth > b.width) x = e.clientX - b.left - tip.offsetWidth - 14;
-        tip.style.left = Math.max(0, x) + "px"; tip.style.top = yy + "px";
-      });
-      g.addEventListener("mouseleave", function () { g.classList.remove("hl"); hl(k, false); tip.hidden = true; });
-      g.addEventListener("click", function () { goDetail(ms[0]); });
+          (idx < n - 1 ? "<div>→ " + fmt(gaps[idx]) + " till höger granne</div>" : "") + touchHint(touch);
+      }, function () { g.classList.remove("hl"); hl(k, false); }, function () { goDetail(ms[0]); });
     });
   }
 
@@ -1482,23 +1509,14 @@
         return "<div>Närmast" + (names.length > 1 ? " <i>" + esc(names[s2]) + "</i>" : "") + ": " +
           esc(r["Samlings-nummer"] || r["ID"] || "—") + " · " + x.id.diffs + " bp · " + x.id.pct.toFixed(1) + " %</div>";
       }).join("");
-      c.addEventListener("mouseenter", function () {
+      chartTip(c, wrap, tip, function (touch) {
         setHl(k, true);
         tip.innerHTML = (names.length > 1 ? "<div><i>" + esc(names[groups[k].s]) + "</i></div>" : "") +
           "<strong>" + ms.length + (ms.length === 1 ? " individ" : " individer") + "</strong>" +
           ms.slice(0, 8).map(function (r) { return "<div>" + label(r) + "</div>"; }).join("") +
           (ms.length > 8 ? "<div>+" + (ms.length - 8) + " till</div>" : "") +
-          (nearHtml ? '<div class="tip-near">' + nearHtml + "</div>" : "");
-        tip.hidden = false;
-      });
-      c.addEventListener("mousemove", function (e) {
-        var b = wrap.getBoundingClientRect();
-        var x = e.clientX - b.left + 14, y = e.clientY - b.top + 14;
-        if (x + tip.offsetWidth > b.width) x = e.clientX - b.left - tip.offsetWidth - 14;
-        tip.style.left = Math.max(0, x) + "px"; tip.style.top = y + "px";
-      });
-      c.addEventListener("mouseleave", function () { setHl(k, false); tip.hidden = true; });
-      c.addEventListener("click", function () { goDetail(ms[0]); });
+          (nearHtml ? '<div class="tip-near">' + nearHtml + "</div>" : "") + touchHint(touch);
+      }, function () { setHl(k, false); }, function () { goDetail(ms[0]); });
     });
     items.forEach(function (li) {
       var k = li.getAttribute("data-g");
