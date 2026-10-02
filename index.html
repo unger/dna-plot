@@ -60,6 +60,15 @@
   .li-meta { color: var(--muted); font-size: 13px; text-align: right; white-space: nowrap; }
   .empty { color: var(--muted); text-align: center; padding: 40px; }
   .li-meta strong { color: var(--text); }
+  .li-meta .spread { display: block; font-size: 12px; }
+  .sort-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+  .sort-bar .lbl { color: var(--muted); font-size: 13px; margin-right: 2px; }
+  .sort-btn {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;
+  }
+  .sort-btn:hover { border-color: var(--accent); }
+  .sort-btn.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
   .species-link { color: var(--accent); }
 
   /* Species page */
@@ -68,7 +77,16 @@
   .taxon-head:first-child { margin-top: 0; }
   .taxon-head span { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
   ul.species-rows li { padding: 7px 12px; margin-bottom: 6px; }
-  ul.species-rows li.hl { border-color: var(--accent); background: var(--accent-soft); }
+  ul.species-rows li.sp-group { display: block; padding: 0; overflow: hidden; cursor: default; }
+  ul.species-rows li.sp-group:hover { border-color: var(--border); background: var(--panel); }
+  ul.species-rows li.sp-group .grouphead { padding: 7px 12px; align-items: baseline; }
+  ul.species-rows li.sp-group .grouphead .li-meta { white-space: normal; max-width: 50%; }
+  ul.species-rows.nested {
+    margin: 0; padding: 4px 8px 8px 16px; background: #fafafb;
+    border-top: 1px solid var(--border);
+  }
+  ul.species-rows.nested li { margin-bottom: 4px; }
+  ul.species-rows li.hl, ul.species-rows li.sp-group.hl { border-color: var(--accent); background: var(--accent-soft); }
   .chart-note { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
   .plot-wrap { position: relative; }
   .plot-wrap svg { display: block; width: 100%; height: auto; }
@@ -334,11 +352,66 @@
     return records.filter(function (r) { return matches(r, words); });
   }
 
+  function commonName(sp) {
+    return (sp.members.filter(function (r) { return r["Artnamn"]; })[0] || {})["Artnamn"] || "";
+  }
+
+  // Start-page sorting. `dir` is the default direction when a key is first
+  // picked; the second click flips it, the third resets to the default order
+  // (sortState null = Latin A–Ö, no button active). Missing values sort last.
+  var SORTS = [
+    { key: "sci", label: "Latinskt", dir: 1, val: function (sp) { return sp.name.toLowerCase(); } },
+    { key: "common", label: "Svenskt", dir: 1, val: function (sp) { return commonName(sp).toLowerCase() || null; } },
+    { key: "count", label: "Antal individer", dir: -1, val: function (sp, n) { return n; } },
+    { key: "spread", label: "Spridning", dir: -1, val: function (sp) { var s = intraSpread(sp); return s ? s.max : null; } }
+  ];
+  var sortState = null;
+
+  function sortDef(k) { return SORTS.filter(function (s) { return s.key === k; })[0]; }
+
+  function sortSpecies(shown, matched) {
+    var st = sortState || { key: "sci", dir: 1 };
+    var def = sortDef(st.key);
+    var vals = {};
+    shown.forEach(function (sp) { vals[sp.name] = def.val(sp, matched[sp.name].length); });
+    return shown.slice().sort(function (a, b) {
+      var va = vals[a.name], vb = vals[b.name];
+      if (va === null || vb === null) {
+        if (va !== vb) return va === null ? 1 : -1;
+      } else if (va !== vb) {
+        var c = typeof va === "string" ? va.localeCompare(vb, "sv") : (va < vb ? -1 : 1);
+        if (c) return c * st.dir;
+      }
+      return a.name.localeCompare(b.name, "sv"); // tiebreak
+    });
+  }
+
+  function sortBar() {
+    var bar = document.createElement("div");
+    bar.className = "sort-bar";
+    bar.innerHTML = '<span class="lbl">Sortera:</span>' + SORTS.map(function (s) {
+      var on = !!sortState && s.key === sortState.key;
+      return '<button class="sort-btn' + (on ? " on" : "") + '" data-sort="' + s.key + '">' +
+        esc(s.label) + (on ? (sortState.dir === 1 ? " ↑" : " ↓") : "") + "</button>";
+    }).join("");
+    Array.prototype.forEach.call(bar.querySelectorAll("[data-sort]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var k = btn.getAttribute("data-sort");
+        var d = sortDef(k).dir;
+        if (!sortState || sortState.key !== k) sortState = { key: k, dir: d };
+        else if (sortState.dir === d) sortState.dir = -d;
+        else sortState = null;
+        renderList();
+      });
+    });
+    return bar;
+  }
+
   function renderList() {
     var list = currentMatches();
     var matched = {};
     list.forEach(function (r) { (matched[r.__species] = matched[r.__species] || []).push(r); });
-    var shown = speciesList.filter(function (sp) { return matched[sp.name]; });
+    var shown = sortSpecies(speciesList.filter(function (sp) { return matched[sp.name]; }), matched);
     countEl.textContent =
       "(" + shown.length + (shown.length === 1 ? " art" : " arter") +
       " · " + list.length + (list.length === 1 ? " individ)" : " individer)");
@@ -352,7 +425,7 @@
     ul.className = "list";
     shown.forEach(function (sp) {
       var n = matched[sp.name].length, total = sp.members.length;
-      var common = (sp.members.filter(function (r) { return r["Artnamn"]; })[0] || {})["Artnamn"] || "";
+      var common = commonName(sp);
       var li = document.createElement("li");
       li.innerHTML =
         '<span class="li-main">' +
@@ -360,11 +433,12 @@
           '<span class="common">' + esc(common) + '</span>' +
         '</span>' +
         '<span class="li-meta"><strong>' + n + (n !== total ? " av " + total : "") + "</strong> " +
-          (total === 1 ? "individ" : "individer") + '</span>';
+          (total === 1 ? "individ" : "individer") + spreadHtml(sp) + '</span>';
       li.addEventListener("click", function () { goSpecies(sp); });
       ul.appendChild(li);
     });
     view.innerHTML = "";
+    view.appendChild(sortBar());
     view.appendChild(ul);
   }
 
@@ -387,6 +461,33 @@
       diffs: compared - match, compared: compared,
       missing: missing, missingA: missingA, missingB: missingB
     };
+  }
+
+  // Intra-species COI spread: max and mean pairwise difference (%) between
+  // individuals with COI. Null when fewer than two have COI. Cached per species.
+  var spreadCache = {};
+  function intraSpread(sp) {
+    if (sp.slug in spreadCache) return spreadCache[sp.slug];
+    var seqs = sp.members.filter(function (r) { return r["COI"]; });
+    var res = null;
+    if (seqs.length > 1) {
+      var max = 0, sum = 0, pairs = 0;
+      for (var i = 0; i < seqs.length; i++) {
+        for (var j = i + 1; j < seqs.length; j++) {
+          var d = 100 - coiIdentity(seqs[i]["COI"], seqs[j]["COI"]).pct;
+          if (d > max) max = d;
+          sum += d; pairs++;
+        }
+      }
+      res = { max: max, mean: sum / pairs, n: seqs.length };
+    }
+    return (spreadCache[sp.slug] = res);
+  }
+  function spreadHtml(sp) {
+    var s = intraSpread(sp);
+    if (!s) return '<span class="spread">spridning —</span>';
+    return '<span class="spread" title="Medel ' + s.mean.toFixed(2) + " % · " + s.n +
+      ' individer med COI">spridning max ' + s.max.toFixed(1) + " %</span>";
   }
 
   var SIMILAR_STEP = 10; // how many to show initially and per "Visa fler"
@@ -810,7 +911,8 @@
   // sized by count); distance between points ≈ number of differing bases.
   // `others` (0–2 species) are plotted alongside `sp`, each in its own color,
   // which turns the page into a comparison. State kept across re-renders of the same page.
-  var speciesShown = null, nearQuery = "";
+  var MAX_GROUP_NAMES = 3; // species page: list at most this many provinces / localities per group, else a count
+  var speciesShown = null, nearQuery = "", openGroups = {}; // openGroups: expanded identical-COI groups
   // Series colors in fixed order (blue, orange, aqua: the three slots that stay
   // distinguishable in a scatter plot). The main species is always the first.
   var SPECIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"];
@@ -859,7 +961,7 @@
 
   function renderSpecies(sp, others) {
     var samePage = speciesShown === sp.slug;
-    if (!samePage) nearQuery = "";
+    if (!samePage) { nearQuery = ""; openGroups = {}; }
     speciesShown = sp.slug;
     // Sorted by Släkte/art (the merged taxon field), then collection number.
     var members = sp.members.slice().sort(function (a, b) {
@@ -882,18 +984,9 @@
     var common = (members.filter(function (r) { return r["Artnamn"]; })[0] || {})["Artnamn"] || "";
     var taxonCount = {};
     members.forEach(function (r) { var t = r.__taxon || "Okänt"; taxonCount[t] = (taxonCount[t] || 0) + 1; });
-    var lastTaxon = null;
-    var rows = members.map(function (r, idx) {
+    function memberRow(r, withG) {
       var g = gOf[r.__slug];
-      var t = r.__taxon || "Okänt", head = "";
-      if (t !== lastTaxon) {
-        head = (lastTaxon === null ? "" : "</ul>") +
-          '<h4 class="taxon-head"><i>' + esc(t) + "</i> <span>" + taxonCount[t] +
-          (taxonCount[t] === 1 ? " individ" : " individer") + "</span></h4>" +
-          '<ul class="list species-rows">';
-        lastTaxon = t;
-      }
-      return head + '<li data-ref="' + idx + '"' + (g !== undefined ? ' data-g="' + g + '"' : "") + ">" +
+      return '<li data-ref="' + members.indexOf(r) + '"' + (withG && g !== undefined ? ' data-g="' + g + '"' : "") + ">" +
         '<span class="li-main">' +
           '<span class="sn">' + esc(r["Samlings-nummer"] || r["ID"] || "—") + "</span>" +
           '<span class="common">' + esc([r["Provins"], r["Lokalnamn"]].filter(Boolean).join(" · ")) +
@@ -901,6 +994,47 @@
         "</span>" +
         '<span class="li-meta">' + esc(r["Startdatum"] || "") + "</span>" +
       "</li>";
+    }
+    // Individuals with identical COI (same variant group) within a taxon are
+    // collapsed into one row at the first member's position, like "Närmast lika".
+    var sections = [], secOf = {};
+    members.forEach(function (r) {
+      var t = r.__taxon || "Okänt";
+      var sec = secOf[t];
+      if (!sec) { sec = secOf[t] = { t: t, items: [], byG: {} }; sections.push(sec); }
+      var g = gOf[r.__slug];
+      if (g === undefined) { sec.items.push([r]); return; }
+      if (!sec.byG[g]) sec.items.push(sec.byG[g] = []);
+      sec.byG[g].push(r);
+    });
+    var rows = sections.map(function (sec) {
+      return '<h4 class="taxon-head"><i>' + esc(sec.t) + "</i> <span>" + taxonCount[sec.t] +
+          (taxonCount[sec.t] === 1 ? " individ" : " individer") + "</span></h4>" +
+        '<ul class="list species-rows">' + sec.items.map(function (ms) {
+          if (ms.length === 1) return memberRow(ms[0], true);
+          var g = gOf[ms[0].__slug], open = !!openGroups[g];
+          var provs = {}, locs = {};
+          ms.forEach(function (r) {
+            if (r["Provins"]) provs[r["Provins"]] = 1;
+            if (r["Lokalnamn"]) locs[r["Lokalnamn"]] = 1;
+          });
+          // Unique provinces / locality names, listed when few enough to read at a glance.
+          provs = Object.keys(provs); locs = Object.keys(locs);
+          var provTxt = provs.length <= MAX_GROUP_NAMES ? provs.join(" · ") : provs.length + " landskap";
+          var span = locs.length <= MAX_GROUP_NAMES ? locs.join(", ") : locs.length + " lokaler";
+          return '<li class="sp-group" data-g="' + g + '">' +
+            '<div class="grouphead" data-ref="' + members.indexOf(ms[0]) + '">' +
+              '<span class="li-main">' +
+                '<span class="sn">' + ms.length + " individer · identisk COI</span>" +
+                '<span class="common">' + esc(provTxt) + (provs.length ? " · " : "") +
+                  '<a class="expand-link" href="#" data-exp="' + g + '">' + (open ? "dölj" : "visa alla") + "</a></span>" +
+              "</span>" +
+              '<span class="li-meta">' + esc(span) + "</span>" +
+            "</div>" +
+            '<ul class="list species-rows nested"' + (open ? "" : " hidden") + ">" +
+              ms.map(function (r) { return memberRow(r, false); }).join("") + "</ul>" +
+          "</li>";
+        }).join("") + "</ul>";
     }).join("");
 
     var plot = "";
@@ -944,15 +1078,27 @@
         '<div class="subtitle">' + esc(common) + (common ? " · " : "") + members.length +
           (members.length === 1 ? " individ" : " individer") + "</div>" +
         '<div class="detail-grid">' +
-          '<div class="detail-main">' + (nMain ? hist : "") + rows + "</ul></div>" +
+          '<div class="detail-main">' + (nMain ? hist : "") + rows + "</div>" +
           (plot || near ? '<aside class="detail-side">' + plot + near + "</aside>" : "") +
         "</div>" +
       "</div>";
 
     document.getElementById("back").addEventListener("click", goList);
-    var items = Array.prototype.slice.call(view.querySelectorAll("ul.species-rows li"));
-    items.forEach(function (li) {
-      li.addEventListener("click", function () { goDetail(members[+li.getAttribute("data-ref")]); });
+    var main = view.querySelector(".detail-main");
+    var items = Array.prototype.slice.call(main.querySelectorAll("[data-g]"));
+    Array.prototype.forEach.call(main.querySelectorAll("[data-ref]"), function (el) {
+      el.addEventListener("click", function () { goDetail(members[+el.getAttribute("data-ref")]); });
+    });
+    Array.prototype.forEach.call(main.querySelectorAll("[data-exp]"), function (link) {
+      link.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var g = link.getAttribute("data-exp");
+        var ul = link.closest("li.sp-group").querySelector("ul.nested");
+        openGroups[g] = ul.hasAttribute("hidden");
+        if (openGroups[g]) ul.removeAttribute("hidden"); else ul.setAttribute("hidden", "");
+        link.textContent = openGroups[g] ? "dölj" : "visa alla";
+      });
     });
 
     if (groups.length >= 1) {
