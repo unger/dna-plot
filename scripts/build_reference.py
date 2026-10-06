@@ -38,6 +38,16 @@ def load_own():
     return [r for r in d if r.get("Släkte") == "Coleophora" and r.get("COI")]
 
 
+def make_slug(all_own):
+    """The app's slug rule: collection number when unique, else "<sn>~<ID>", else ID."""
+    sn_count = collections.Counter(r["Samlings-nummer"] for r in all_own if r.get("Samlings-nummer"))
+
+    def slug(r):
+        sn = r.get("Samlings-nummer")
+        return sn if sn and sn_count[sn] == 1 else (sn + "~" + r["ID"] if sn else r["ID"])
+    return slug
+
+
 def encode(seq):
     return CODE[np.frombuffer(seq.encode("ascii"), dtype=np.uint8)]
 
@@ -154,13 +164,7 @@ def main():
     for i, s in enumerate(seqs):
         R[i, :len(s)] = encode(s)
 
-    # Same slug rule as the app: collection number when unique, else "<sn>~<ID>", else ID.
-    all_own = load_own()
-    sn_count = collections.Counter(r["Samlings-nummer"] for r in all_own if r.get("Samlings-nummer"))
-
-    def slug(r):
-        sn = r.get("Samlings-nummer")
-        return sn if sn and sn_count[sn] == 1 else (sn + "~" + r["ID"] if sn else r["ID"])
+    slug = make_slug(load_own())
 
     os.makedirs(a.out, exist_ok=True)
     index = {}          # app slug -> sequence hash
