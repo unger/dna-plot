@@ -1938,7 +1938,7 @@
   var refHideSuspicious = false, refToken = 0;
   var REF_AUTO_GROUPS = 5; // the automatic difference limit shows about this many groups
   var refState = { maxDiff: null }; // maxDiff null = automatic
-  var REF_GROUP_MAX = 5, REF_GROUP_DEFAULT = 2, refGroupBp = REF_GROUP_DEFAULT; // merge sequences within ≤ n bp of each other (0 = off)
+  var REF_GROUP_MAX = 10, REF_GROUP_DEFAULT = 2, refGroupBp = REF_GROUP_DEFAULT; // merge sequences within ≤ n bp of each other (0 = off)
 
   function refMode(key) {
     return REF_MODES.filter(function (m) { return m.key === key; })[0] || REF_MODES[0];
