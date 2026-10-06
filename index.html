@@ -97,6 +97,11 @@
   .ctl input[type=range] { flex: 1; min-width: 0; height: 28px; margin: 0; }
   .ctl .ctl-val { flex: none; width: 90px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; }
   .ctl-note { color: var(--muted); font-size: 12px; margin: 8px 0 8px; }
+  ul.refrows li.off { display: none; }
+  ul.refrows li.sel { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  ul.refrows .bold-link { white-space: nowrap; }
+  .plot-wrap .ptg.sel .pt, .plot-wrap .ptg.hov .pt { stroke: var(--text); stroke-width: 3; }
+  .legend-sp .lg.sel { font-weight: 600; text-decoration: underline; }
   ul.refbox li { cursor: default; }
   ul.refbox li:hover { border-color: var(--border); background: var(--panel); }
   ul.refbox li a { margin-right: 6px; }
@@ -1929,6 +1934,7 @@
   var REF_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#8e5bd1", "#d6a21e", "#d4457a", "#3fa7c9", "#7a8a2b"];
   var REF_OTHER = "#9a9aa5", REF_NONE = "#d3d3da", REF_OTHER_KEY = "__other";
   var refPin = null; // legend group kept lifted after a tap
+  var refSel = null, refListShown = 12; // selected group (id of its nearest record), rows shown in the list
   var refHideSuspicious = false, refToken = 0;
   var REF_AUTO_GROUPS = 5; // the automatic difference limit shows about this many groups
   var refState = { maxDiff: null }; // maxDiff null = automatic
@@ -2079,7 +2085,7 @@
 
   function startRef(ctx, modeKey, query) {
     var token = ++refToken, mode = refMode(modeKey), q = refParseQuery(query);
-    refPin = null;
+    refPin = null; refSel = null; refListShown = 12;
     refState.maxDiff = q.d !== undefined && q.d !== "" && isFinite(+q.d) ? Math.max(0, +q.d) : null;
     var g = q.g === undefined || q.g === "" ? NaN : Math.round(+q.g);
     refGroupBp = g >= 0 && g <= REF_GROUP_MAX ? g : REF_GROUP_DEFAULT;
@@ -2152,7 +2158,7 @@
         '<div class="subtitle">' + ctx.sub(ref) + "</div>" +
         buttons +
         '<div class="chart-note">Avstånd i bilden ≈ skillnad i COI (%). ' + ctx.note + '; punktstorlek = antal BOLD-poster med samma sekvens. ' +
-          "Klicka på en punkt för att öppna posten på BOLD.</div>" +
+          "Klicka på en punkt eller en rad i listan för att markera den; länk till BOLD finns i listan.</div>" +
         '<div class="plot-wrap"><div id="plot"></div><div class="tip" id="tip" hidden></div></div>' +
         '<div class="ctl"><span class="lbl">Max skillnad</span>' +
           '<input type="range" id="ref-diff" min="0" max="' + sliderMax + '" step="0.01">' +
@@ -2163,7 +2169,8 @@
         '<div class="ctl-note" id="ref-status"></div>' +
         '<div class="legend-sp" id="ref-legend"></div>' +
         '<div class="seq-header"><h3>Närmaste sekvenserna</h3></div>' +
-        '<ul class="list species-rows" id="ref-list"></ul>' +
+        '<ul class="list species-rows refrows" id="ref-list"></ul>' +
+        '<div id="ref-more"></div>' +
       "</div>";
 
     var pending = false;
@@ -2250,11 +2257,28 @@
       (rest > 0 ? '<span class="lg" data-g="' + REF_OTHER_KEY + '"><span class="sw-dot" style="background:' + REF_OTHER + '"></span>övriga ' + mode.what + " (" + rest + ")</span>" : "") +
       (totals[""] ? '<span class="lg" data-g=""><span class="sw-dot" style="background:' + REF_NONE + '"></span>saknas (' + totals[""] + ")</span>" : "");
 
-    document.getElementById("ref-list").innerHTML = nbs.slice(0, 12).map(function (nb) {
-      return '<li><span class="li-main"><span class="sci">' + refTop(nb.species, 2) + "</span>" +
+    // A group of sequences can hold several values (e.g. species): its point is a pie with the
+    // commonest value as the base color and a wedge per other value, sized by record count.
+    function groupColor(gk) { return gk === "" ? REF_NONE : (gk === REF_OTHER_KEY ? REF_OTHER : colorOf[gk]); }
+    var gi = nbs.map(function (nb) {
+      var counts = {}, total = 0;
+      Object.keys(nb[mode.field]).forEach(function (key) {
+        var gk = key === "" ? "" : (colorOf[key] === REF_OTHER ? REF_OTHER_KEY : key);
+        counts[gk] = (counts[gk] || 0) + nb[mode.field][key];
+        total += nb[mode.field][key];
+      });
+      var maj = refMajor(counts);
+      return { counts: counts, total: total, maj: maj === null ? "" : maj };
+    });
+
+    document.getElementById("ref-list").innerHTML = nbs.map(function (nb, k) {
+      return '<li data-k="' + k + '"' + (k >= refListShown ? ' class="off"' : "") + '><span class="li-main"><span class="sci">' +
+        '<span class="sw-dot" style="background:' + groupColor(gi[k].maj) + '"></span>' + refTop(nb.species, 2) + "</span>" +
         '<span class="common">' + refTop(nb.bins, 2) + " · " + refTop(nb.countries, 3) + "</span></span>" +
         '<span class="li-meta"><strong>' + nb.identity.toFixed(1) + " %</strong> · " +
-        nb.n + (nb.n === 1 ? " post" : " poster") + (nb.variants > 1 ? " · " + nb.variants + " sekvenser" : "") + "</span></li>";
+        nb.n + (nb.n === 1 ? " post" : " poster") + (nb.variants > 1 ? " · " + nb.variants + " sekvenser" : "") +
+        ' · <a class="bold-link" target="_blank" rel="noopener" href="https://portal.boldsystems.org/record/' +
+        encodeURIComponent(nb.ids[0].split(".")[0]) + '">BOLD →</a></span></li>';
     }).join("");
 
     // Distance between groups = closest pair of their sequences (own points are rows 0..ownCount-1), in %.
@@ -2283,20 +2307,9 @@
     [0.5, 1, 2, 5, 10, 20].forEach(function (c) { if (c * scale <= W * 0.3) nice = c; });
 
     var order = nbs.map(function (_, k) { return k; }).sort(function (a, b) { return nbs[b].n - nbs[a].n; });
-    // A group of sequences can hold several values (e.g. species): its point is a pie with the
-    // commonest value as the base color and a wedge per other value, sized by record count.
-    function groupColor(gk) { return gk === "" ? REF_NONE : (gk === REF_OTHER_KEY ? REF_OTHER : colorOf[gk]); }
-    var pointGroups = [];
+    var pointGroups = gi.map(function (g) { return Object.keys(g.counts); });
     var marks = order.map(function (k) {
-      var nb = nbs[k], counts = {}, total = 0;
-      Object.keys(nb[mode.field]).forEach(function (key) {
-        var gk = key === "" ? "" : (colorOf[key] === REF_OTHER ? REF_OTHER_KEY : key);
-        counts[gk] = (counts[gk] || 0) + nb[mode.field][key];
-        total += nb[mode.field][key];
-      });
-      var maj = refMajor(counts);
-      if (maj === null) maj = "";
-      pointGroups[k] = Object.keys(counts);
+      var nb = nbs[k], counts = gi[k].counts, total = gi[k].total, maj = gi[k].maj;
       var cx = pts[nbCl[k]][0] * scale + ox, cy = pts[nbCl[k]][1] * scale + oy, r = 4 + 1.6 * Math.sqrt(nb.n - 1);
       var wedges = "", a0 = -Math.PI / 2 + 2 * Math.PI * counts[maj] / total;
       Object.keys(counts).forEach(function (gk) {
@@ -2325,28 +2338,73 @@
     plotEl.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Scatter-plott av ' + esc(ctx.name) +
       " bland " + nbs.length + ' referenssekvenser">' + marks + me + bar + "</svg>";
 
-    // Legend hover (or tap, which pins) lifts that group's points above the others.
+    // Highlighting ties the legend, the points and the list rows together:
+    //  - hovering a legend item (or tapping it, which pins it) lifts the points holding that
+    //    value above the others and marks the list rows that hold it;
+    //  - a selected point (click on it, or on its row) is ringed, and its row and values marked.
     var svgEl = plotEl.querySelector("svg"), meEl = svgEl.querySelector(".mes");
     var circles = order.map(function (k) { return svgEl.querySelector('g.ptg[data-k="' + k + '"]'); });
-    function lift(g) {
+    var rowEls = Array.prototype.slice.call(document.querySelectorAll("#ref-list li"));
+    var legEls = Array.prototype.slice.call(document.querySelectorAll("#ref-legend .lg"));
+    var selK = null, hoverG, hoverK = null; // hoverG undefined = no legend item hovered
+    nbs.forEach(function (nb, k) { if (refSel && nb.ids[0] === refSel) selK = k; });
+    if (refPin !== null && !document.querySelector('#ref-legend .lg[data-g="' + refPin.replace(/"/g, '\\"') + '"]')) refPin = null;
+    function paint() {
+      var g = hoverG !== undefined ? hoverG : refPin;
       circles.forEach(function (c, i) {
         var on = g !== null && pointGroups[order[i]].indexOf(g) !== -1; // any point holding that value
         c.classList.toggle("dim", g !== null && !on);
         if (on) svgEl.insertBefore(c, meEl);
       });
       if (g === null) circles.forEach(function (c) { svgEl.insertBefore(c, meEl); }); // back to the size order
-      Array.prototype.forEach.call(document.querySelectorAll("#ref-legend .lg"), function (el) {
-        el.classList.toggle("on", g !== null && el.getAttribute("data-g") === g);
+      circles.forEach(function (c, i) {
+        var k = order[i];
+        c.classList.toggle("sel", k === selK);
+        c.classList.toggle("hov", k === hoverK && k !== selK);
+        if (k === selK || k === hoverK) svgEl.insertBefore(c, meEl);
+      });
+      rowEls.forEach(function (li) {
+        var k = +li.getAttribute("data-k");
+        li.classList.toggle("hl", g !== null && pointGroups[k].indexOf(g) !== -1);
+        li.classList.toggle("sel", k === selK);
+      });
+      legEls.forEach(function (el) {
+        var eg = el.getAttribute("data-g");
+        el.classList.toggle("on", g !== null && eg === g);
+        el.classList.toggle("sel", selK !== null && pointGroups[selK].indexOf(eg) !== -1);
       });
     }
-    Array.prototype.forEach.call(document.querySelectorAll("#ref-legend .lg"), function (el) {
+    function showRows(n) {
+      refListShown = Math.max(refListShown, n);
+      rowEls.forEach(function (li) { li.classList.toggle("off", +li.getAttribute("data-k") >= refListShown); });
+      var left = nbs.length - refListShown;
+      document.getElementById("ref-more").innerHTML = left > 0 ? '<button class="sort-btn" id="ref-more-btn">Visa fler (' + left + ")</button>" : "";
+      var btn = document.getElementById("ref-more-btn");
+      if (btn) btn.addEventListener("click", function () { showRows(refListShown + 25); });
+    }
+    function select(k, fromGraph) {
+      selK = selK === k ? null : k;
+      refSel = selK === null ? null : nbs[selK].ids[0];
+      if (selK !== null) showRows(selK + 1);
+      paint();
+      if (selK === null) return;
+      if (fromGraph) rowEls[selK].scrollIntoView({ block: "nearest", behavior: "smooth" });
+      else plotEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+    legEls.forEach(function (el) {
       var g = el.getAttribute("data-g");
-      el.addEventListener("pointerenter", function (e) { if (e.pointerType === "mouse") lift(g); });
-      el.addEventListener("pointerleave", function (e) { if (e.pointerType === "mouse") lift(refPin); });
-      el.addEventListener("click", function () { refPin = refPin === g ? null : g; lift(refPin); });
+      el.addEventListener("pointerenter", function (e) { if (e.pointerType === "mouse") { hoverG = g; paint(); } });
+      el.addEventListener("pointerleave", function (e) { if (e.pointerType === "mouse") { hoverG = undefined; paint(); } });
+      el.addEventListener("click", function () { refPin = refPin === g ? null : g; paint(); });
     });
-    if (refPin !== null && !document.querySelector('#ref-legend .lg[data-g="' + refPin.replace(/"/g, '\\"') + '"]')) refPin = null;
-    lift(refPin);
+    rowEls.forEach(function (li) {
+      var k = +li.getAttribute("data-k");
+      li.addEventListener("pointerenter", function (e) { if (e.pointerType === "mouse") { hoverK = k; paint(); } });
+      li.addEventListener("pointerleave", function (e) { if (e.pointerType === "mouse") { hoverK = null; paint(); } });
+      li.addEventListener("click", function (e) { if (!e.target.closest("a")) select(k, false); });
+    });
+    showRows(selK === null ? 0 : selK + 1);
+    paint();
 
     var tip = document.getElementById("tip"), wrap = plotEl.parentNode;
     tip.hidden = true;
@@ -2371,10 +2429,8 @@
           "<div>Land: " + refTop(nb.countries, 3) + "</div>" +
           (nb.variants > 1 ? "<div>" + nb.variants + " sekvenser i gruppen (störst skillnad " + (nb.spread / 10).toFixed(1) + " %)</div>" : "") +
           (nb.suspicious ? "<div>Misstänkta: " + nb.suspicious + "</div>" : "") +
-          '<div class="tip-near">' + esc(pid) + "</div>" + touchHint(touch);
-      }, function () {}, function () {
-        window.open("https://portal.boldsystems.org/record/" + encodeURIComponent(pid), "_blank", "noopener");
-      });
+          '<div class="tip-near">' + esc(pid) + "</div>" + (touch ? '<div class="tip-hint">Tryck igen för att markera</div>' : "");
+      }, function () {}, function () { select(+c.getAttribute("data-k"), true); });
     });
   }
 
