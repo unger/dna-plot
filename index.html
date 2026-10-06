@@ -2067,6 +2067,24 @@
     return parts.length ? "?" + parts.join("&") : "";
   }
 
+  // The own points (rows 0..count-1) grouped like the neighbours: single linkage at ≤ bp differences.
+  // Returns groups of row indices.
+  function refGroupRows(ref, count, bp) {
+    var par = [], i, j, cut = (bp + 0.5) * 1000 / 658;
+    for (i = 0; i < count; i++) par[i] = i;
+    function find(x) { while (par[x] !== x) x = par[x] = par[par[x]]; return x; }
+    for (i = 0; i < count; i++) for (j = i + 1; j < count; j++) {
+      if (bp && ref.dist[i][j] <= cut) par[find(i)] = find(j);
+    }
+    var by = {}, out = [];
+    for (i = 0; i < count; i++) {
+      var r = find(i);
+      if (!(r in by)) { by[r] = []; out.push(by[r]); }
+      by[r].push(i);
+    }
+    return out;
+  }
+
   function renderRef(rec, modeKey, query) { startRef(refCtxInd(rec), modeKey, query); }
   function renderSpeciesRef(sp, modeKey, query) { startRef(refCtxSp(sp), modeKey, query); }
 
@@ -2180,7 +2198,7 @@
   }
 
   function updateRef(ctx, ref, mode, sliderMax) {
-    var ownCount = refOwnCount(ref);
+    var ownCount = refOwnCount(ref), ownGroups = refGroupRows(ref, ownCount, refGroupBp);
     var vis = refVisible(ref);
     var auto = refState.maxDiff === null;
     var maxD = auto ? refAutoDiff(ref, vis) : refState.maxDiff;
@@ -2213,7 +2231,8 @@
     nbs = clusters.map(function (c) { return c.nb; });
 
     document.getElementById("ref-status").textContent = nbs.length
-      ? nbs.length + (nbs.length === 1 ? " grupp" : " grupper") + " av " + rawCount + " närmaste COI-sekvenser"
+      ? nbs.length + (nbs.length === 1 ? " grupp" : " grupper") + " av " + rawCount + " närmaste COI-sekvenser" +
+        (ownCount > 1 ? " · " + ownGroups.length + " av " + ownCount + " egna varianter" : "")
       : "Ingen referenssekvens inom " + maxD.toFixed(2) + " % skillnad. Dra slidern åt höger.";
 
     // Legend: groups by total records; the biggest few get a color.
@@ -2244,9 +2263,8 @@
     }).join("");
 
     // Distance between groups = closest pair of their sequences (own points are rows 0..ownCount-1), in %.
-    var sets = [], o;
-    for (o = 0; o < ownCount; o++) sets.push([o]);
-    sets = sets.concat(clusters.map(function (c) { return c.rows; }));
+    var o;
+    var sets = ownGroups.concat(clusters.map(function (c) { return c.rows; }));
     var n = sets.length, D = [], i, j;
     function closest(a, b) {
       var best = Infinity;
@@ -2284,7 +2302,7 @@
       var maj = refMajor(counts);
       if (maj === null) maj = "";
       pointGroups[k] = Object.keys(counts);
-      var cx = pts[ownCount + k][0] * scale + ox, cy = pts[ownCount + k][1] * scale + oy, r = 4 + 1.6 * Math.sqrt(nb.n - 1);
+      var cx = pts[ownGroups.length + k][0] * scale + ox, cy = pts[ownGroups.length + k][1] * scale + oy, r = 4 + 1.6 * Math.sqrt(nb.n - 1);
       var wedges = "", a0 = -Math.PI / 2 + 2 * Math.PI * counts[maj] / total;
       Object.keys(counts).forEach(function (gk) {
         if (gk === maj) return;
@@ -2299,7 +2317,7 @@
         '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '"/>' + wedges + "</g>";
     }).join("");
     var me = '<g class="mes' + (ctx.ownTip ? " hit" : "") + '">';
-    for (o = 0; o < ownCount; o++) {
+    for (o = 0; o < ownGroups.length; o++) {
       var mx = +(pts[o][0] * scale + ox).toFixed(1), my = +(pts[o][1] * scale + oy).toFixed(1);
       me += '<path class="me" data-o="' + o + '" d="M' + mx + " " + (my - 12) + 'l12 12l-12 12l-12 -12z"/>';
     }
@@ -2339,7 +2357,8 @@
     tip.hidden = true;
     if (ctx.ownTip) {
       Array.prototype.forEach.call(plotEl.querySelectorAll("path.me"), function (el) {
-        var v = ref.own[+el.getAttribute("data-o")];
+        var v = { n: 0, slugs: [] };
+        ownGroups[+el.getAttribute("data-o")].forEach(function (i) { v.n += ref.own[i].n; v.slugs = v.slugs.concat(ref.own[i].slugs); });
         var recs = v.slugs.map(function (sl) { return slugMap[sl]; }).filter(Boolean);
         chartTip(el, wrap, tip, function (touch) {
           tip.innerHTML = "<strong>" + v.n + (v.n === 1 ? " individ" : " individer") + "</strong>" +
