@@ -60,8 +60,10 @@ def load_reference():
            FROM records r JOIN sequences s USING(record_id)
            WHERE r.marker_code='COI-5P' AND s.nuc IS NOT NULL"""
     for rid, sp, bn, co, sus, nuc in con.execute(q):
-        seq = nuc.replace("-", "").upper()
-        if not MIN_COMPARED <= len(seq) <= MAX_LEN:
+        # Keep BOLD's alignment gaps ("-"): they pad each record to the common frame, so a
+        # record starting 25 bases in still lines up. Gaps count as unknown when comparing.
+        seq = nuc.upper()
+        if not (MIN_COMPARED <= len(seq.replace("-", "")) and len(seq) <= MAX_LEN):
             continue
         g = groups.setdefault(seq, {"ids": [], "species": collections.Counter(),
                                     "bins": collections.Counter(),

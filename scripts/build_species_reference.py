@@ -19,6 +19,7 @@ import numpy as np
 import build_reference as br
 
 K_TOTAL = 150     # reference sequences per species file
+MIN_IDENTITY = 0.80  # a BIN member less alike than this is a bad alignment, not a relative
 K_BIN = 100       # at most this many of them chosen because they sit in the species' BINs
 TOP = 6           # other names / countries listed per BIN
 
@@ -102,7 +103,7 @@ def main():
                 shift0 = shift                  # frame: the first variant
         in_bin = np.array([any(b in g["bins"] for b in species_bins) for g in groups])
         order_all = np.argsort(-best, kind="stable")
-        chosen = [i for i in order_all if in_bin[i]][:K_BIN]
+        chosen = [i for i in order_all if in_bin[i] and best[i] >= MIN_IDENTITY][:K_BIN]
         seen = set(chosen)
         chosen += [i for i in order_all if i not in seen][:max(0, K_TOTAL - len(chosen))]
         chosen.sort(key=lambda i: -best[i])
