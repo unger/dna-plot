@@ -20,6 +20,8 @@ import numpy as np
 import build_reference as br
 
 TOP = 4  # species listed per BIN in the overview
+NEAR = 25  # nearest other BINs listed per BIN
+FRAME = 700  # columns of the alignment frame the consensus sequences cover
 MAX_FRAME_SHIFT = 450  # BOLD does not always pad a record that starts late; look this far for its place
 MIN_FRAME_IDENT = 0.9  # a record this alike the anchor as it stands is in the frame
 MIN_FRAME_COMPARED = 120
@@ -69,6 +71,31 @@ def in_bin_frame(seq, anchor):
     return "-" * best_k + stripped if best_k > 0 else stripped[-best_k:]
 
 
+def consensus(by_seq):
+    """The commonest base per frame column over the BIN's records (4 = nothing there)."""
+    counts = np.zeros((FRAME, 4))
+    for seq, g in by_seq.items():
+        codes = br.encode(seq)[:FRAME]
+        for c in range(4):
+            counts[:len(codes), c] += (codes == c) * len(g["ids"])
+    return np.where(counts.sum(axis=1) > 0, counts.argmax(axis=1), 4).astype(np.uint8)
+
+
+def nearest_bins(cons):
+    """For each BIN the NEAR closest others as [bin, tenths of a percent] between consensus sequences."""
+    names = list(cons)
+    M = np.vstack([cons[b] for b in names])
+    near = {}
+    for i, b in enumerate(names):
+        ok = (M[i] < 4) & (M < 4)
+        compared = ok.sum(axis=1)
+        diff = ((M[i] != M) & ok).sum(axis=1)
+        d = np.where(compared >= br.MIN_COMPARED // 2, np.round(1000 * diff / np.maximum(compared, 1)), 10000)
+        order = [j for j in np.argsort(d, kind="stable") if j != i and d[j] < 10000][:NEAR]
+        near[b] = [[names[j], int(d[j])] for j in order]
+    return near
+
+
 def main():
     own = br.load_own()
     slug = br.make_slug(own)
@@ -94,6 +121,7 @@ def main():
         R[i, :len(s)] = br.encode(s)
 
     overview = {}
+    cons = {}
     for b in sorted(wanted):
         rows = con.execute(
             """SELECT r.record_id, r.species, r.country, r.suspicious, s.nuc FROM records r
@@ -120,6 +148,7 @@ def main():
         br.write_js("ref/bin_%s.js" % key, 'window.DNA_REF_BIN=window.DNA_REF_BIN||{};window.DNA_REF_BIN["%s"]=' % b,
                     {"bin": b, "seqs": out_seqs, "own": out_own})
 
+        cons[b] = consensus(by_seq)
         sp_total = collections.Counter()
         for g in by_seq.values():
             sp_total.update(g["species"])
@@ -128,6 +157,8 @@ def main():
                        "n_species": len(sp_total),
                        "names": [k for k, _ in sp_total.most_common() if k], "own": sum(len(v) for v in own_by_bin.get(b, {}).values())}
         print(b, len(rows), "records,", len(out_seqs), "sequences,", overview[b]["own"], "own")
+    for b, near in nearest_bins(cons).items():
+        overview[b]["near"] = near
     br.write_js("ref/bins.js", "window.DNA_REF_BINS=", overview)
 
 

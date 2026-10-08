@@ -2568,9 +2568,24 @@
     }).join("");
     var add = "";
     if (bins.length < BIN_MAX) {
-      add = '<input id="bin-add" list="bin-opts" placeholder="Lägg till BIN, t.ex. AAE8865" size="26" autocomplete="off">' +
-        '<datalist id="bin-opts">' + Object.keys(info).filter(function (b) { return bins.indexOf(b) === -1; }).map(function (b) {
-          return '<option value="' + esc(b) + '">' + esc(Object.keys(info[b].species).slice(0, 2).join(", ")) + "</option>";
+      // Nearest first: the closest distance to any chosen BIN (consensus sequences, from the build), then the rest
+      var close = {};
+      bins.forEach(function (c) {
+        (info[c].near || []).forEach(function (nr) {
+          if (bins.indexOf(nr[0]) === -1 && (close[nr[0]] === undefined || nr[1] < close[nr[0]].d)) close[nr[0]] = { d: nr[1], from: c };
+        });
+      });
+      var cands = Object.keys(info).filter(function (b) { return bins.indexOf(b) === -1; }).sort(function (a, b) {
+        var ca = close[a], cb = close[b];
+        if (ca && cb) return ca.d - cb.d;
+        if (ca || cb) return ca ? -1 : 1;
+        return info[b].own - info[a].own || info[b].n - info[a].n;
+      });
+      add = '<input id="bin-add" list="bin-opts" placeholder="Lägg till BIN (närmaste först), t.ex. AAE8865" size="34" autocomplete="off">' +
+        '<datalist id="bin-opts">' + cands.map(function (b) {
+          var c = close[b];
+          return '<option value="' + esc(b) + '">' + (c ? (c.d / 10).toFixed(1) + " % från " + esc(c.from.replace("BOLD:", "")) + " · " : "") +
+            esc((info[b].names || []).slice(0, 2).join(", ") || "okänd art") + "</option>";
         }).join("") + "</datalist>";
     }
     return '<div class="bin-pick">' + chips + add + "</div>";
@@ -2642,7 +2657,7 @@
       '<ul class="list species-rows refbox" id="bin-list">' + all.map(function (b) {
         var i = info[b];
         return '<li data-t="' + esc((b + " " + (i.names || Object.keys(i.species)).join(" ")).toLowerCase()) + '">' +
-          '<span class="li-main"><span class="sn"><input type="checkbox" value="' + esc(b) + '"> ' + esc(b) + " · " + i.n +
+          '<span class="li-main"><span class="sn"><input type="checkbox" value="' + esc(b) + '" title="Välj flera"> <a href="' + binHash([b]) + '">' + esc(b) + "</a> · " + i.n +
           (i.n === 1 ? " post" : " poster") + '</span><span class="common">' + binSpeciesText(i.species, 3, i.n_species) + "</span></span>" +
           '<span class="li-meta"><strong>' + i.own + "</strong> " + (i.own === 1 ? "eget fynd" : "egna fynd") + "</span></li>";
       }).join("") + "</ul></div>";
@@ -2756,7 +2771,9 @@
       }
     }
 
-    html += '<div class="seq-header"><h3>BOLD:s BIN:ar för namnet</h3></div>';
+    var plotBins = info ? speciesPlotBins(info) : [];
+    html += '<div class="seq-header"><h3>BOLD:s BIN:ar för arten</h3>' +
+      (plotBins.length ? '<a class="tree-link" href="' + binHash(plotBins.slice(0, BIN_MAX)) + '">Plotta artens BIN:ar →</a>' : "") + "</div>";
     if (!info) return html + '<div class="chart-note">Namnet kan inte slås upp i BOLD (inget artnamn).</div>';
     if (!info.named) return html + '<div class="chart-note">Namnet finns inte på några poster i det hämtade BOLD-datat.</div>';
     var ownIn = info.own_bins || {}, listed = {};
@@ -2771,7 +2788,7 @@
       '<ul class="list species-rows refbox">' + info.bins.map(function (b) {
         var others = Object.keys(b.others).sort(function (x, y) { return b.others[y] - b.others[x]; });
         var mine = ownIn[b.bin] || 0;
-        return "<li><span class=\"li-main\"><span class=\"sn\">" + refBinLink(b.bin) + " · " + b.n + " av " + b.total + " poster har namnet</span>" +
+        return "<li><span class=\"li-main\"><span class=\"sn\">" + refBinLink(b.bin) + " · " + b.n + " av " + b.total + " med samma artnamn</span>" +
           '<span class="common">' + (others.length
             ? "Delas med: " + others.slice(0, 4).map(function (k) { return (k === "" ? "okänd" : "<i>" + esc(k) + "</i>") + " ×" + b.others[k]; }).join(", ") +
               (b.n_others > 4 ? " +" + (b.n_others - 4) : "") + ". "
@@ -2784,7 +2801,41 @@
             return (b === "" ? "utan BIN-träff" : "i " + refBinLink(b)) + " ×" + ownIn[b];
           }).join(", ") + ".</div>"
         : "");
-    return html;
+    return html + nearBinsHtml(info, ownIn);
+  }
+
+  // The BINs closest to the species' own (those the name is in, and those the individuals fall in), from
+  // the consensus distances in ref/bins.js; each links to its plot page, and all together to one plot.
+  // The species' own BINs that have a plot page: those the name is in, and those the individuals fall in.
+  function speciesPlotBins(info) {
+    var all = binInfo(), mine = {};
+    info.bins.forEach(function (b) { mine[b.bin] = 1; });
+    Object.keys(info.own_bins || {}).forEach(function (b) { if (b) mine[b] = 1; });
+    return Object.keys(mine).filter(function (b) { return all[b]; });
+  }
+  function nearBinsHtml(info, ownIn) {
+    var all = binInfo(), mineList = speciesPlotBins(info), mine = {};
+    mineList.forEach(function (b) { mine[b] = 1; });
+    if (!mineList.length) return "";
+    var close = {};
+    mineList.forEach(function (c) {
+      (all[c].near || []).forEach(function (nr) {
+        if (!mine[nr[0]] && (close[nr[0]] === undefined || nr[1] < close[nr[0]].d)) close[nr[0]] = { d: nr[1], from: c };
+      });
+    });
+    var list = Object.keys(close).sort(function (a, b) { return close[a].d - close[b].d; }).slice(0, 8);
+    var html = '<div class="seq-header"><h3>Närmaste BIN:ar</h3></div>' +
+      '<div class="chart-note">BIN:ar utanför artens egna, närmast först (avstånd mellan BIN:arnas konsensussekvenser, ' +
+        "bland de BIN:ar som finns i BIN-urvalet).</div>";
+    if (!list.length) return html + '<div class="chart-note">Inga närliggande BIN:ar hittades.</div>';
+    return html + '<ul class="list species-rows refbox">' + list.map(function (b) {
+      var i = all[b], c = close[b];
+      return '<li><span class="li-main"><span class="sn">' + refBinLink(b) + " · " + i.n + (i.n === 1 ? " post" : " poster") + "</span>" +
+        '<span class="common">' + (i.names && i.names.length ? binSpeciesText(i.species, 3, i.n_species) : "okänd art") + "</span>" +
+        '<span class="common"><a class="tree-link" href="' + binHash(mineList.slice(0, BIN_MAX - 1).concat(b)) + '">plotta tillsammans →</a> ' +
+        refBoldLink(b) + "</span></span>" +
+        '<span class="li-meta"><strong>' + (c.d / 10).toFixed(1) + " %</strong> från " + esc(c.from.replace("BOLD:", "")) + "</span></li>";
+    }).join("") + "</ul>";
   }
 
   // --- Hash-based routing (GitHub Pages friendly; survives reload & deep links) ---
