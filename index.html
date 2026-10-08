@@ -110,12 +110,14 @@
   .plot-wrap .mes.solid .me { fill: #111; stroke: #fff; stroke-width: 2; }
   .plot-wrap .mes.solid.hit .me { pointer-events: all; }
   .bin-head { border-left: 5px solid var(--border); padding: 4px 0 4px 10px; margin: 10px 0; font-size: 13px; }
-  .bin-head .bh-title { font-weight: 600; }
+  .bin-head .bh-title { font-weight: 600; display: flex; justify-content: space-between; gap: 12px; }
+  .bin-head .bh-title .bold-link { font-weight: 400; white-space: nowrap; }
   .bin-head .bh-own { color: var(--text); }
   .bin-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 12px; }
   .bin-pick .chip { border: 1px solid var(--border); border-radius: 12px; padding: 1px 8px; font-size: 13px; }
   .bin-pick input { font: inherit; font-size: 13px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; }
   footer.source { max-width: 900px; margin: 24px auto; padding: 0 20px; color: var(--muted); font-size: 12px; }
+  .plot-wrap .grid { stroke: var(--border); stroke-width: 1; opacity: 0.7; pointer-events: none; }
   .legend-own { font-size: 13px; margin: 0 0 6px; }
   .legend-own .dia { display: inline-block; width: 10px; height: 10px; background: #111; transform: rotate(45deg); margin: 0 7px 1px 2px; }
   .plot-wrap .ptg.dim .pt, .plot-wrap .ptg.dim .wedge { fill-opacity: 0.3; }
@@ -1164,6 +1166,16 @@
       });
     });
 
+    Array.prototype.forEach.call(main.querySelectorAll("[data-rexp]"), function (link) {
+      link.addEventListener("click", function (e) {
+        e.preventDefault();
+        var ul = link.closest("li.sp-group").querySelector("ul.nested");
+        var show = ul.hasAttribute("hidden");
+        if (show) ul.removeAttribute("hidden"); else ul.setAttribute("hidden", "");
+        link.textContent = show ? "dölj" : "visa alla";
+      });
+    });
+
     if (groups.length >= 1) {
       var allNames = [sp].concat(others).map(function (s) { return s.name; });
       var hl = drawScatter(groups, items, allNames);
@@ -1957,6 +1969,9 @@
   var refPin = null; // legend group kept lifted after a tap
   var refSel = null, refListShown = 12; // selected group (id of its nearest record), rows shown in the list
   var refHideSuspicious = false, refToken = 0, refNoDiff = false;
+  // The plot's scale steps through fixed spans (the plot's width in %), so the same difference looks
+  // the same in every plot with the same step; "Zooma in" fits the points exactly instead.
+  var REF_SPANS = [2, 5, 10, 20, 50], REF_GRID = { 2: 0.5, 5: 1, 10: 2, 20: 5, 50: 10 }, refZoom = false;
   var REF_AUTO_GROUPS = 5; // the automatic difference limit shows about this many groups
   var refState = { maxDiff: null }; // maxDiff null = automatic
   var REF_GROUP_MAX = 10, REF_GROUP_DEFAULT = 2, refGroupBp = REF_GROUP_DEFAULT; // merge sequences within ≤ n bp of each other (0 = off)
@@ -2106,7 +2121,7 @@
 
   function startRef(ctx, modeKey, query) {
     var token = ++refToken, mode = refMode(modeKey), q = refParseQuery(query);
-    refPin = null; refSel = null; refListShown = 12;
+    refPin = null; refSel = null; refListShown = 12; refZoom = false;
     refNoDiff = !!ctx.noDiff;
     refState.maxDiff = refNoDiff ? 0 : q.d !== undefined && q.d !== "" && isFinite(+q.d) ? Math.max(0, +q.d) : null;
     var g = q.g === undefined || q.g === "" ? NaN : Math.round(+q.g);
@@ -2171,7 +2186,8 @@
 
     var buttons = '<div class="sort-bar"><span class="lbl">Färga efter:</span>' + REF_MODES.map(function (m) {
       return '<a class="sort-btn" data-mode="' + m.key + '" href="#">' + m.label + "</a>";
-    }).join("") + (anySuspicious ? '<button class="sort-btn" id="ref-susp">Dölj misstänkta</button>' : "") + "</div>";
+    }).join("") + (anySuspicious ? '<button class="sort-btn" id="ref-susp">Dölj misstänkta</button>' : "") +
+      '<button class="sort-btn" id="ref-zoom" title="Anpassa skalan exakt efter punkterna">Zooma in</button></div>';
 
     view.innerHTML =
       '<a class="back" href="' + ctx.back + '">&larr; ' + ctx.backText + '</a>' +
@@ -2214,6 +2230,7 @@
     });
     var sb = document.getElementById("ref-susp");
     if (sb) sb.addEventListener("click", function () { refHideSuspicious = !refHideSuspicious; update(); });
+    document.getElementById("ref-zoom").addEventListener("click", function () { refZoom = !refZoom; update(); });
 
     if (ctx.bind) ctx.bind(ref);
     updateRef(ctx, ref, mode, sliderMax);
@@ -2237,6 +2254,7 @@
     document.getElementById("ref-group-val").textContent = refGroupBp ? "≤ " + refGroupBp + " bp" : "Av";
     var sb = document.getElementById("ref-susp");
     if (sb) sb.classList.toggle("on", refHideSuspicious);
+    document.getElementById("ref-zoom").classList.toggle("on", refZoom);
     Array.prototype.forEach.call(view.querySelectorAll("a[data-mode]"), function (a) {
       var key = a.getAttribute("data-mode");
       a.classList.toggle("on", key === mode.key);
@@ -2329,10 +2347,18 @@
     var minx = Math.min.apply(null, xs), maxx = Math.max.apply(null, xs);
     var miny = Math.min.apply(null, ys), maxy = Math.max.apply(null, ys);
     var sx = maxx - minx, sy = maxy - miny;
-    var scale = Math.min((W - 2 * P) / Math.max(sx, 0.5), (H - 2 * P - 14) / Math.max(sy, 0.5));
+    var aw = W - 2 * P, ah = H - 2 * P - 14, span = 0;
+    if (!refZoom) { // smallest fixed span that holds the points; none (> 50 %) falls back to an exact fit
+      REF_SPANS.some(function (sp) { if (sx <= sp && sy <= sp * ah / aw) { span = sp; return true; } return false; });
+    }
+    var scale = span ? aw / span : Math.min(aw / Math.max(sx, 0.5), ah / Math.max(sy, 0.5));
     var ox = (W - sx * scale) / 2 - minx * scale, oy = (H - 14 - sy * scale) / 2 - miny * scale;
     var nice = 0.5;
     [0.5, 1, 2, 5, 10, 20].forEach(function (c) { if (c * scale <= W * 0.3) nice = c; });
+    // Faint grid, one line per step (anchored at the plot's edge; only the spacing means anything)
+    var gstep = span ? REF_GRID[span] : nice, grid = "", gx, gy;
+    for (gx = P; gx <= W - P + 0.5; gx += gstep * scale) grid += '<line class="grid" x1="' + gx.toFixed(1) + '" x2="' + gx.toFixed(1) + '" y1="0" y2="' + (H - 28) + '"/>';
+    for (gy = P; gy <= H - 28; gy += gstep * scale) grid += '<line class="grid" x1="0" x2="' + W + '" y1="' + gy.toFixed(1) + '" y2="' + gy.toFixed(1) + '"/>';
 
     var order = nbs.map(function (_, k) { return k; }).sort(function (a, b) { return nbs[b].n - nbs[a].n; });
     var pointGroups = gi.map(function (g) { return Object.keys(g.counts); });
@@ -2360,11 +2386,13 @@
     me += "</g>";
     var barLen = Math.min(nice * scale, W - 2 * P - 40);
     var bar = '<line class="sbar" x1="' + P + '" x2="' + (P + barLen).toFixed(1) + '" y1="' + (H - 12) + '" y2="' + (H - 12) + '"/>' +
-      '<text class="sbar-t" x="' + (P + barLen + 6).toFixed(1) + '" y="' + (H - 12) + '" dy="0.35em">' + nice + " %</text>";
+      '<text class="sbar-t" x="' + (P + barLen + 6).toFixed(1) + '" y="' + (H - 12) + '" dy="0.35em">' + nice + " %</text>" +
+      '<text class="sbar-t" text-anchor="end" x="' + (W - P) + '" y="' + (H - 12) + '" dy="0.35em">' +
+      (span ? "bilden spänner " + span + " % · rutor " + gstep + " %" : "zoomad · rutor " + gstep + " %") + "</text>";
 
     var plotEl = document.getElementById("plot");
     plotEl.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Scatter-plott av ' + esc(ctx.name) +
-      " bland " + nbs.length + ' referenssekvenser">' + marks + me + bar + "</svg>";
+      " bland " + nbs.length + ' referenssekvenser">' + grid + marks + me + bar + "</svg>";
 
     // Highlighting ties the legend, the points and the list rows together:
     //  - hovering a legend item (or tapping it, which pins it) lifts the points holding that
@@ -2444,7 +2472,9 @@
         chartTip(el, wrap, tip, function (touch) {
           tip.innerHTML = "<strong>" + v.n + (v.n === 1 ? " individ" : " individer") + "</strong>" +
             recs.slice(0, 8).map(function (r) {
-              return "<div>" + esc([r["Samlings-nummer"] || r["ID"], r["Provins"]].filter(Boolean).join(" · ")) + "</div>";
+              return "<div>" + esc([r["Samlings-nummer"] || r["ID"]].filter(Boolean).join("")) +
+                (r["Vetenskapligt namn"] ? " · <i>" + esc(r["Vetenskapligt namn"]) + "</i>" : "") +
+                (r["Provins"] ? " · " + esc(r["Provins"]) : "") + "</div>";
             }).join("") + (recs.length > 8 ? "<div>+" + (recs.length - 8) + " till</div>" : "") + touchHint(touch);
         }, function () {}, function () { if (recs[0]) goDetail(recs[0]); });
       });
@@ -2533,7 +2563,7 @@
   function binPickerHtml(bins) {
     var info = binInfo();
     var chips = bins.map(function (b) {
-      return '<span class="chip">' + refBinLink(b) + ' <a href="' + binHash(bins.filter(function (x) { return x !== b; })) +
+      return '<span class="chip">' + esc(b) + ' <a href="' + binHash(bins.filter(function (x) { return x !== b; })) +
         '" title="Ta bort">×</a></span>';
     }).join("");
     var add = "";
@@ -2563,9 +2593,9 @@
             return '<a href="#/i/' + encodeURIComponent(sl) + '">' + esc(r ? (r["Samlings-nummer"] || r["ID"] || sl) : sl) + "</a>";
           }).join(", ") + (slugs.length > 12 ? " +" + (slugs.length - 12) : "") + "</div>"
         : '<div class="chart-note">Inga egna fynd i den här BIN:en.</div>';
-      byBin[f.bin] = '<div class="bin-head" style="border-left-color:' + color + '"><div class="bh-title">' + refBinLink(f.bin) +
+      byBin[f.bin] = '<div class="bin-head" style="border-left-color:' + color + '"><div class="bh-title"><span>' + esc(f.bin) +
         " · " + n + (n === 1 ? " post" : " poster") + ", " + f.seqs.length + (f.seqs.length === 1 ? " sekvens" : " sekvenser") + ", " +
-        Object.keys(sp).length + (Object.keys(sp).length === 1 ? " art" : " arter") + "</div>" +
+        Object.keys(sp).length + (Object.keys(sp).length === 1 ? " art" : " arter") + "</span>" + refBoldLink(f.bin) + "</div>" +
         "<div>" + binSpeciesText(sp, 8) + "</div>" + mine + "</div>";
     });
     return binPickerHtml(bins) + bins.map(function (b) { return byBin[b]; }).join("");
@@ -2611,7 +2641,7 @@
         '<button class="sort-btn" id="bin-go" disabled>Visa valda</button></div>' +
       '<ul class="list species-rows refbox" id="bin-list">' + all.map(function (b) {
         var i = info[b];
-        return '<li data-t="' + esc((b + " " + Object.keys(i.species).join(" ")).toLowerCase()) + '">' +
+        return '<li data-t="' + esc((b + " " + (i.names || Object.keys(i.species)).join(" ")).toLowerCase()) + '">' +
           '<span class="li-main"><span class="sn"><input type="checkbox" value="' + esc(b) + '"> ' + esc(b) + " · " + i.n +
           (i.n === 1 ? " post" : " poster") + '</span><span class="common">' + binSpeciesText(i.species, 3, i.n_species) + "</span></span>" +
           '<span class="li-meta"><strong>' + i.own + "</strong> " + (i.own === 1 ? "eget fynd" : "egna fynd") + "</span></li>";
@@ -2639,8 +2669,14 @@
   // --- Species page: the name checked against BOLD, and BOLD's BINs for the name ---
   // Data from scripts/build_ref_summary.py (window.DNA_REF_SUMMARY, per individual) and
   // scripts/build_species_reference.py (window.DNA_REF_SPECIES, per species name).
+  function refBoldBinUrl(bin) { return "https://portal.boldsystems.org/bin/" + encodeURIComponent(bin); }
+  // A BIN in the text links to its plot page; a BIN without one (no data built for it) goes to BOLD.
   function refBinLink(bin) {
-    return '<a href="https://portal.boldsystems.org/bin/' + encodeURIComponent(bin) + '" target="_blank" rel="noopener">' + esc(bin) + "</a>";
+    if (binInfo()[bin]) return '<a href="' + binHash([bin]) + '">' + esc(bin) + "</a>";
+    return '<a href="' + refBoldBinUrl(bin) + '" target="_blank" rel="noopener">' + esc(bin) + "</a>";
+  }
+  function refBoldLink(bin) {
+    return '<a class="bold-link" href="' + refBoldBinUrl(bin) + '" target="_blank" rel="noopener">BOLD →</a>';
   }
   function refPct(v) { return v.toFixed(2).replace(/\.?0+$/, "") + " %"; }
 
@@ -2665,22 +2701,57 @@
           (cnt.langt ? " · " + cnt.langt + " utan namngiven sekvens nära" : "") +
           (cnt.okand ? " · " + cnt.okand + " utan artnamn" : "") + "</div>";
       if (odd.length) {
-        html += '<ul class="list species-rows refbox">' + odd.map(function (r) {
-          var e = sums[r.__slug], what;
+        // Individuals with the same COI sequence get the same result: one row per sequence, with the
+        // individuals behind it a click away.
+        var byHash = {}, seqGroups = [];
+        odd.forEach(function (r) {
+          var h = sums[r.__slug].h || r.__slug;
+          if (!byHash[h]) seqGroups.push(byHash[h] = []);
+          byHash[h].push(r);
+        });
+        function place(r) {
+          return [r["Provins"], r["Lokalnamn"]].filter(Boolean).join(" · ");
+        }
+        function names(r) {
+          var t = r.__taxon || r["Vetenskapligt namn"]; // the composite name the species page headings use
+          return t ? "<i>" + esc(t) + "</i>" : "";
+        }
+        function whatOf(e) {
           if (e.st === "stav") {
-            what = "BOLD stavar <i>" + Object.keys(e.best).map(esc).join(", ") + "</i>";
+            return "BOLD stavar <i>" + Object.keys(e.best).map(esc).join(", ") + "</i>";
           } else if (e.st === "annat") {
-            what = "närmast <i>" + Object.keys(e.best).map(esc).join(", ") + "</i> (" + refPct(e.d0) + ")" +
+            return "närmast <i>" + Object.keys(e.best).map(esc).join(", ") + "</i> (" + refPct(e.d0) + ")" +
               (e.own_d !== null && e.own_d !== undefined ? ", eget namn först på " + refPct(e.own_d) : ", eget namn finns inte bland de närmaste");
           } else if (e.st === "langt") {
-            what = e.d0 === undefined ? "inga namngivna sekvenser bland de närmaste" : "närmaste namngivna sekvens är " + refPct(e.d0) + " bort";
-          } else {
-            what = "saknar artnamn att jämföra";
+            return e.d0 === undefined ? "inga namngivna sekvenser bland de närmaste" : refPct(e.d0) + " skillnad";
           }
-          return '<li><span class="li-main"><span class="sn">' + esc(r["Samlings-nummer"] || r["ID"] || "—") + "</span>" +
-            '<span class="common">' + what + "</span></span>" +
-            '<span class="li-meta"><a href="#/i/' + encodeURIComponent(r.__slug) + '">individ →</a> ' +
-            '<a href="' + refHash(r) + '">referens →</a></span></li>';
+          return "saknar artnamn att jämföra";
+        }
+        function memberLine(r) {
+          return '<span class="common">' + [names(r), esc(place(r))].filter(Boolean).join(" · ") + "</span>";
+        }
+        html += '<ul class="list species-rows refbox">' + seqGroups.map(function (ms) {
+          var r = ms[0], what = whatOf(sums[r.__slug]);
+          var links = '<a href="#/i/' + encodeURIComponent(r.__slug) + '">individ →</a> <a href="' + refHash(r) + '">referens →</a>';
+          if (ms.length === 1) {
+            return '<li><span class="li-main"><span class="sn">' + esc(r["Samlings-nummer"] || r["ID"] || "—") + "</span>" +
+              '<span class="common">' + what + "</span>" + memberLine(r) + '</span><span class="li-meta">' + links + "</span></li>";
+          }
+          var places = {};
+          ms.forEach(function (m) { if (place(m)) places[place(m)] = 1; });
+          places = Object.keys(places);
+          var taxa = {};
+          ms.forEach(function (m) { if (m.__taxon) taxa[m.__taxon] = 1; });
+          taxa = Object.keys(taxa).map(function (t) { return "<i>" + esc(t) + "</i>"; }).join(", ");
+          return '<li class="sp-group"><div class="grouphead"><span class="li-main"><span class="sn">' + ms.length + " individer · identisk COI</span>" +
+            '<span class="common">' + what + "</span>" +
+            '<span class="common">' + (taxa ? taxa + " · " : "") + esc(places.length <= 3 ? places.join(" · ") : places.length + " platser") + " · " +
+              '<a class="expand-link" href="#" data-rexp="1">visa alla</a></span></span>' +
+            '<span class="li-meta">' + links + "</span></div>" +
+            '<ul class="list species-rows nested" hidden>' + ms.map(function (m) {
+              return '<li><span class="li-main"><span class="sn">' + esc(m["Samlings-nummer"] || m["ID"] || "—") + "</span>" + memberLine(m) +
+                '</span><span class="li-meta"><a href="#/i/' + encodeURIComponent(m.__slug) + '">individ →</a></span></li>';
+            }).join("") + "</ul></li>";
         }).join("") + "</ul>";
       }
     }
@@ -2706,7 +2777,7 @@
               (b.n_others > 4 ? " +" + (b.n_others - 4) : "") + ". "
             : "Bara det här namnet. ") + "Länder: " + refTop(b.countries, 4) + "</span></span>" +
           '<span class="li-meta"><strong>' + mine + "</strong> av dina individer" +
-          (binInfo()[b.bin] ? ' <a class="tree-link" href="' + binHash([b.bin]) + '">BIN-plot →</a>' : "") + "</span></li>";
+          " " + refBoldLink(b.bin) + "</span></li>";
       }).join("") + "</ul>" +
       (elsewhere.length
         ? '<div class="chart-note">Dina övriga individer: ' + elsewhere.map(function (b) {

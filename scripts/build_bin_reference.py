@@ -3,7 +3,9 @@
 Usage: python scripts/build_bin_reference.py   (after build_ref_summary.py and build_species_reference.py)
 
 Covers the BINs the own individuals fall in (BIN of the nearest BOLD sequence, cached in
-ref/summary.js) and the BINs of the own species names (ref/species.js). Per BIN file:
+ref/summary.js), the BINs of the own species names (ref/species.js) and the BINs of the species
+listed in scripts/bin_species.txt (one name per line), so a species you have no findings of can be
+looked up too. Per BIN file:
   * seqs - the BIN's unique COI sequences in BOLD's alignment frame (gaps "-"), each with the
     records, species, countries and ids behind it
   * own  - the own individuals assigned to the BIN, put in the same frame, identical ones merged
@@ -79,13 +81,18 @@ def main():
         if b:
             own_by_bin[b].setdefault(rec["COI"].replace("-", "").upper(), []).append(slug(rec))
     wanted = set(own_by_bin) | {b["bin"] for sp in species.values() for b in sp["bins"]}
+    con = sqlite3.connect(br.DB)
+    for line in open("scripts/bin_species.txt", encoding="utf8"):
+        name = line.strip()
+        if name and not name.startswith("#"):
+            wanted |= {r[0] for r in con.execute(
+                "SELECT DISTINCT bin_uri FROM records WHERE species = ? AND bin_uri IS NOT NULL", (name,))}
 
     seqs, groups = br.load_reference()
     R = np.full((len(seqs), br.MAX_LEN), br.PAD, dtype=np.uint8)
     for i, s in enumerate(seqs):
         R[i, :len(s)] = br.encode(s)
 
-    con = sqlite3.connect(br.DB)
     overview = {}
     for b in sorted(wanted):
         rows = con.execute(
@@ -118,7 +125,8 @@ def main():
             sp_total.update(g["species"])
         overview[b] = {"file": key, "n": len(rows), "variants": len(out_seqs),
                        "species": br.unnamed(collections.Counter(dict(sp_total.most_common(TOP)))),
-                       "n_species": len(sp_total), "own": sum(len(v) for v in own_by_bin.get(b, {}).values())}
+                       "n_species": len(sp_total),
+                       "names": [k for k, _ in sp_total.most_common() if k], "own": sum(len(v) for v in own_by_bin.get(b, {}).values())}
         print(b, len(rows), "records,", len(out_seqs), "sequences,", overview[b]["own"], "own")
     br.write_js("ref/bins.js", "window.DNA_REF_BINS=", overview)
 
