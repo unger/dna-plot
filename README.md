@@ -40,3 +40,29 @@ open('data.js','w',encoding='utf-8').write('window.DNA_DATA='+json.dumps(d,ensur
 3. The site appears at `https://<user>.github.io/<repo>/` within a minute or two.
 
 The `.nojekyll` file tells GitHub Pages to serve the files as-is.
+
+## BIN reference page
+
+`#/b` lets you pick one or several BOLD BINs (at most 8) and plots only their COI sequences,
+one color per BIN, with your own findings as black diamonds and a heading per BIN listing the
+species in it. Your findings are placed in the BIN of their nearest BOLD sequence (cached in
+`ref/summary.js`). Data is built from `data/bold/bold.sqlite`:
+
+```bash
+python scripts/build_bin_reference.py   # after build_ref_summary.py and build_species_reference.py
+```
+
+## Data source
+
+Reference sequences, species names and BIN assignments come from BOLD Systems
+(https://boldsystems.org), retrieved 2026-10-06 (genus *Coleophora*, marker COI-5P).
+Please cite, as BOLD asks (https://boldsystems.org/about/citation/):
+
+- Ratnasingham S, Hebert PDN (2013). A DNA-Based Registry for All Animal Species: The Barcode Index
+  Number (BIN) System. PLoS ONE 8(8): e66213. doi:10.1371/journal.pone.0066213
+- Ratnasingham S, Wei C, Chan D, et al., Hebert PDN (2024). BOLD v4: A Centralized Bioinformatics Platform
+  for DNA-Based Biodiversity Data. In: DNA Barcoding: Methods and Protocols, Springer, pp. 403-441.
+
+Individual records have no DOI; cite them as "ProcessID. Specimen Depository. (Accessed on YYYY-MM-DD) via
+boldsystems.org". The BIN of the own findings is an estimate from the nearest BOLD sequence within 2.5 %
+difference, not BOLD's own assignment.
