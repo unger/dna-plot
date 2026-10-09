@@ -2654,11 +2654,12 @@
     return { own: own, neighbours: nbs, dist: D, files: files, reference_sequences: nbs.length, k: nbs.length };
   }
 
-  function binPickerHtml(bins, mode) {
+  function binPickerHtml(bins, mode, hashFn) {
+    hashFn = hashFn || binHash;
     var info = binInfo();
     var chips = bins.map(function (b, i) {
       var col = mode.key === "bin" && i < REF_COLORS.length; // same color as the BIN's points in the plot
-      return '<span class="chip' + (col ? " colored" : "") + '"' + (col ? ' style="background:' + REF_COLORS[i] + '"' : "") + '>' + esc(b) + ' <a href="' + binHash(bins.filter(function (x) { return x !== b; })) +
+      return '<span class="chip' + (col ? " colored" : "") + '"' + (col ? ' style="background:' + REF_COLORS[i] + '"' : "") + '>' + esc(b) + ' <a href="' + hashFn(bins.filter(function (x) { return x !== b; })) +
         '" title="Ta bort">×</a></span>';
     }).join("");
     var add = "";
@@ -2680,13 +2681,14 @@
         '<datalist id="bin-opts">' + cands.map(function (b) {
           var c = close[b];
           return '<option value="' + esc(b) + '">' + (c ? (c.d / 10).toFixed(1) + " % från " + esc(c.from.replace("BOLD:", "")) + " · " : "") +
-            esc((info[b].names || []).slice(0, 2).join(", ") || "okänd art") + "</option>";
+            esc((info[b].names || []).join(", ") || "okänd art") + // all the names, so a search for any of them finds the BIN
+             "</option>";
         }).join("") + "</datalist>";
     }
     return '<div class="bin-pick">' + chips + add + "</div>";
   }
 
-  function binHeadHtml(ref, mode, bins) {
+  function binHeadHtml(ref, mode, bins, hashFn, linkFn) {
     var byBin = {};
     ref.files.forEach(function (f, i) {
       var sp = {}, n = 0;
@@ -2715,10 +2717,10 @@
         : "";
       byBin[f.bin] = '<div class="bin-head" style="border-left-color:' + color + '"><div class="bh-title"><span>' + esc(f.bin) +
         " · " + n + (n === 1 ? " post" : " poster") + ", " + f.seqs.length + (f.seqs.length === 1 ? " sekvens" : " sekvenser") + ", " +
-        Object.keys(sp).length + (Object.keys(sp).length === 1 ? " art" : " arter") + "</span><span>" + '<a href="' + binHistHash(f.bin) + '">COI-fördelning →</a> · ' + refBoldLink(f.bin) + "</span></div>" +
+        Object.keys(sp).length + (Object.keys(sp).length === 1 ? " art" : " arter") + "</span><span>" + (linkFn ? linkFn(f.bin) : '<a href="' + binHistHash(f.bin) + '">COI-fördelning →</a>') + " · " + refBoldLink(f.bin) + "</span></div>" +
         "<div>" + binSpeciesText(sp, 8) + "</div>" + mine + sus + "</div>";
     });
-    return binPickerHtml(bins, mode) + bins.map(function (b) { return byBin[b]; }).join("");
+    return binPickerHtml(bins, mode, hashFn) + bins.map(function (b) { return byBin[b]; }).join("");
   }
 
   function renderBinRef(bins, modeKey, query) {
@@ -2755,40 +2757,44 @@
   // tree order with the gap between neighbours = their % difference. Own findings are stacked on the
   // bar of the BOLD sequence they equal (ignoring N), or get a bar of their own; ?i=<slug> keeps only
   // that individual.
-  function binHistHash(bin, slug) {
-    return "#/h/" + encodeURIComponent(bin) + (slug ? "?i=" + encodeURIComponent(slug) : "");
+  function binHistHash(bins, slug) {
+    bins = [].concat(bins);
+    return "#/h/" + bins.map(encodeURIComponent).join(",") + (slug ? "?i=" + encodeURIComponent(slug) : "");
   }
 
-  function renderBinHist(bin, only) {
+  function renderBinHist(bins, only) {
     var token = ++refToken;
-    view.innerHTML = '<a class="back" href="' + binHash([bin]) + '">&larr; Till BIN-plotten</a>' +
+    view.innerHTML = '<a class="back" href="' + binHash(bins) + '">&larr; Till BIN-plotten</a>' +
       '<div class="card"><p class="empty">Läser in referensdata…</p></div>';
-    loadBins([bin], function (files) {
+    loadBins(bins, function (files) {
       if (token !== refToken) return;
       if (!files) { view.querySelector(".card").innerHTML = '<p class="empty">Ingen referensdata hittades.</p>'; return; }
-      buildBinHist(files[0], only);
+      buildBinHist(files, only);
     });
   }
 
-  function buildBinHist(f, only) {
-    var items = f.seqs.map(function (g) {
-      return { g: g, codes: binCodes(g.s), bold: g.n, own: [] };
+  function buildBinHist(files, only) {
+    var bins = files.map(function (f) { return f.bin; });
+    var items = [];
+    files.forEach(function (f, fi) {
+      f.seqs.forEach(function (g) { items.push({ fi: fi, g: g, codes: binCodes(g.s), bold: g.n, own: [] }); });
     });
-    var ownVars = f.own.map(function (o) {
-      return { slugs: only ? o.slugs.filter(function (sl) { return sl === only; }) : o.slugs, codes: binCodes(o.s) };
-    }).filter(function (o) { return o.slugs.length; });
     function pct(a, b) { // % difference over positions where both have A/C/G/T
       var len = Math.min(a.length, b.length), cmp = 0, diff = 0, p;
       for (p = 0; p < len; p++) if (a[p] < 4 && b[p] < 4) { cmp++; if (a[p] !== b[p]) diff++; }
       return cmp ? 100 * diff / cmp : 100;
     }
     var ownN = 0;
-    ownVars.forEach(function (o) {
-      ownN += o.slugs.length;
-      var hit = null, i;
-      for (i = 0; i < items.length && !hit; i++) if (pct(o.codes, items[i].codes) === 0) hit = items[i];
-      if (!hit) { hit = { g: null, codes: o.codes, bold: 0, own: [] }; items.push(hit); }
-      hit.own = hit.own.concat(o.slugs);
+    files.forEach(function (f, fi) {
+      f.own.map(function (o) {
+        return { slugs: only ? o.slugs.filter(function (sl) { return sl === only; }) : o.slugs, codes: binCodes(o.s) };
+      }).filter(function (o) { return o.slugs.length; }).forEach(function (o) {
+        ownN += o.slugs.length;
+        var hit = null, i;
+        for (i = 0; i < items.length && !hit; i++) if (items[i].fi === fi && pct(o.codes, items[i].codes) === 0) hit = items[i];
+        if (!hit) { hit = { fi: fi, g: null, codes: o.codes, bold: 0, own: [] }; items.push(hit); }
+        hit.own = hit.own.concat(o.slugs);
+      });
     });
     var n = items.length, i, j, D = [], order = [];
     for (i = 0; i < n; i++) D[i] = [];
@@ -2825,6 +2831,7 @@
     var top = Math.ceil(maxC / step) * step;
     function y(v) { return T + PH - v / top * PH; }
     function fmt(p) { return p.toFixed(p < 10 ? 2 : 1).replace(".", ",") + " %"; }
+    function binColor(fi) { return fi < REF_COLORS.length ? REF_COLORS[fi] : REF_OTHER; }
 
     var grid = "", v;
     for (v = 0; v <= top; v += step) {
@@ -2841,11 +2848,11 @@
         "Q" + (x0 + bw).toFixed(1) + "," + y0.toFixed(1) + " " + (x0 + bw).toFixed(1) + "," + (y0 + r).toFixed(1) +
         "V" + yb + "Z";
       var lower = it.own.length && it.bold // the BOLD part below the own part
-        ? '<rect class="bar" x="' + x0.toFixed(1) + '" y="' + y(it.bold).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + (yb - y(it.bold)).toFixed(1) + '"/>'
+        ? '<rect class="bar" style="fill:' + binColor(it.fi) + '" x="' + x0.toFixed(1) + '" y="' + y(it.bold).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + (yb - y(it.bold)).toFixed(1) + '"/>'
         : "";
       return '<g class="hbar" data-k="' + k + '">' +
         '<rect class="hit" x="' + (cx(idx) - hl0).toFixed(1) + '" y="' + T + '" width="' + (hl0 + hr0).toFixed(1) + '" height="' + PH + '"/>' +
-        '<path class="bar' + (it.own.length ? " own" : "") + '" d="' + d + '"/>' + lower +
+        '<path class="bar' + (it.own.length ? " own" : "") + '"' + (it.own.length ? "" : ' style="fill:' + binColor(it.fi) + '"') + ' d="' + d + '"/>' + lower +
         (Math.min(hl0, hr0) >= 7 ? '<text class="cnt" x="' + cx(idx).toFixed(1) + '" y="' + (y0 - 5).toFixed(1) + '">' + c + "</text>" : "") +
         "</g>";
     }).join("");
@@ -2857,20 +2864,32 @@
         : "";
     }).join("");
 
-    var boldN = f.seqs.reduce(function (t, g) { return t + g.n; }, 0);
+    var boldN = 0, nSeqs = 0;
+    files.forEach(function (f) { nSeqs += f.seqs.length; f.seqs.forEach(function (g) { boldN += g.n; }); });
     var onlyRec = only && slugMap[only];
-    view.innerHTML = '<a class="back" href="' + binHash([f.bin]) + '">&larr; Till BIN-plotten</a>' +
-      '<div class="card"><h2>COI-varianter i ' + esc(f.bin) + "</h2>" +
-      '<div class="subtitle">' + boldN + (boldN === 1 ? " post" : " poster") + " ur BOLD i " + f.seqs.length +
-        (f.seqs.length === 1 ? " unik sekvens" : " unika sekvenser") + " · " + ownN + (ownN === 1 ? " eget fynd" : " egna fynd") +
-        ' · <a href="' + binHash([f.bin]) + '">Plotta BIN:en →</a> · ' + refBoldLink(f.bin) + "</div>" +
+    var legend = files.map(function (f, fi) {
+      return '<span class="sw-dot" style="background:' + binColor(fi) + '"></span>' + esc(f.bin) + " · ";
+    }).join("") + '<span class="sw-dot" style="background:#eb6834"></span>egna fynd';
+    view.innerHTML = '<a class="back" href="' + binHash(bins) + '">&larr; Till BIN-plotten</a>' +
+      '<div class="card"><h2>COI-varianter i ' + bins.map(esc).join(" + ") + "</h2>" +
+      '<div class="subtitle">' + boldN + (boldN === 1 ? " post" : " poster") + " ur BOLD i " + nSeqs +
+        (nSeqs === 1 ? " unik sekvens" : " unika sekvenser") + " · " + ownN + (ownN === 1 ? " eget fynd" : " egna fynd") +
+        ' · <a href="' + binHash(bins) + '">Plotta ' + (bins.length === 1 ? "BIN:en" : "BIN:arna") + " →</a>" +
+        (bins.length === 1 ? " · " + refBoldLink(bins[0]) : "") + "</div>" +
+      binHeadHtml({ files: files }, { key: "bin" }, bins, function (list) { return list.length ? binHistHash(list, only) : binHash([]); },
+        function (bin) { return '<a href="' + binHash([bin]) + '">Plotta →</a>'; }) +
       (only ? '<div class="chart-note">Visar bara ' + esc(onlyRec ? (onlyRec["Samlings-nummer"] || onlyRec["ID"] || only) : only) +
-          (ownN ? "" : " – individen finns inte bland egna fynd i den här BIN:en") +
-          ' · <a href="' + binHistHash(f.bin) + '">Visa alla egna fynd</a></div>' : "") +
+          (ownN ? "" : " – individen finns inte bland egna fynd i de här BIN:arna") +
+          ' · <a href="' + binHistHash(bins) + '">Visa alla egna fynd</a></div>' : "") +
       '<div class="chart-note">En stapel per unik sekvens, höjden är antal BOLD-poster. Avståndet mellan två grannstaplar ' +
-        "motsvarar deras skillnad i procent (N ignoreras); ordningen följer släktträdet. " +
-        '<span class="sw-dot" style="background:#2a78d6"></span>BOLD · <span class="sw-dot" style="background:#eb6834"></span>egna fynd</div>' +
+        "motsvarar deras skillnad i procent (N ignoreras); ordningen följer släktträdet. " + legend + "</div>" +
       '<div class="plot-wrap hist"><div id="hist"></div><div class="tip" id="hist-tip" hidden></div></div></div>';
+    var inp = document.getElementById("bin-add");
+    if (inp) inp.addEventListener("change", function () {
+      var b = binKnown(inp.value);
+      if (b && bins.indexOf(b) === -1) setHash(binHistHash(bins.concat(b), only).slice(1));
+      else inp.value = "";
+    });
     var el = document.getElementById("hist");
     el.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Stapeldiagram över ' + n +
       ' unika sekvenser">' + grid + gapLbl + bars +
@@ -2882,9 +2901,11 @@
       var recs = it.own.map(function (sl) { return slugMap[sl]; }).filter(Boolean);
       chartTip(gEl, wrap, tip, function (touch) {
         gEl.classList.add("hl");
-        tip.innerHTML = (it.bold ? "<strong>" + it.bold + (it.bold === 1 ? " post" : " poster") + " i BOLD</strong>" +
+        tip.innerHTML = (it.bold ? "<strong>" + it.bold + (it.bold === 1 ? " post" : " poster") + " i BOLD" +
+              (files.length > 1 ? " (" + esc(files[it.fi].bin) + ")" : "") + "</strong>" +
             "<div>Art: " + refTop(it.g.species, 3) + "</div><div>Land: " + refTop(it.g.countries, 3) + "</div>" : "") +
-          (recs.length ? "<strong>" + recs.length + (recs.length === 1 ? " eget fynd" : " egna fynd") + "</strong>" +
+          (recs.length ? "<strong>" + recs.length + (recs.length === 1 ? " eget fynd" : " egna fynd") +
+              (files.length > 1 && !it.bold ? " (" + esc(files[it.fi].bin) + ")" : "") + "</strong>" +
             recs.slice(0, 8).map(function (r) {
               return "<div>" + esc([r["Samlings-nummer"] || r["ID"], r.__taxon || r["Vetenskapligt namn"], r["Provins"], r["Lokalnamn"], r["Startdatum"]].filter(Boolean).join(" · ")) + "</div>";
             }).join("") + (recs.length > 8 ? "<div>+" + (recs.length - 8) + " till</div>" : "") : "") +
@@ -3161,8 +3182,12 @@
       if (cb.length) renderBinRef(cb, parts[2] || "bin", query); else renderBinPicker();
       return;
     } else if (parts[0] === "h" && parts[1]) {
-      var hb = binKnown(decodeURIComponent(parts[1]));
-      if (hb) { renderBinHist(hb, refParseQuery(query).i); return; }
+      var hbs = [];
+      decodeURIComponent(parts[1]).split(",").forEach(function (t) {
+        var k = binKnown(t);
+        if (k && hbs.indexOf(k) === -1 && hbs.length < BIN_MAX) hbs.push(k);
+      });
+      if (hbs.length) { renderBinHist(hbs, refParseQuery(query).i); return; }
     } else if (parts[0] === "sr" && parts[1]) {
       var rsp = speciesMap[decodeURIComponent(parts[1])];
       if (rsp && hasSpeciesRef(rsp)) { renderSpeciesRef(rsp, parts[2], query); return; }
