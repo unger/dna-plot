@@ -52,13 +52,42 @@ def encode(seq):
     return CODE[np.frombuffer(seq.encode("ascii"), dtype=np.uint8)]
 
 
+def load_suspicious():
+    """The records marked suspicious: (ids, matrix of their sequences). They are kept apart from the
+    reference sequences everywhere; pages list the ones near what they show, with the reason."""
+    con = sqlite3.connect(DB)
+    ids, seqs = [], []
+    for rid, nuc in con.execute("""SELECT r.record_id, s.nuc FROM records r JOIN sequences s USING(record_id)
+                                   WHERE r.marker_code='COI-5P' AND r.suspicious = 1 AND s.nuc IS NOT NULL"""):
+        seq = nuc.upper()
+        if MIN_COMPARED <= len(seq.replace("-", "")) and len(seq) <= MAX_LEN:
+            ids.append(rid)
+            seqs.append(seq)
+    M = np.full((len(seqs), MAX_LEN), PAD, dtype=np.uint8)
+    for i, s in enumerate(seqs):
+        M[i, :len(s)] = encode(s)
+    return ids, M
+
+
+def near_suspicious(sus, queries, floor):
+    """Ids of the suspicious sequences at least as alike (best offset) to any of the queries as `floor`."""
+    ids, M = sus
+    if not ids:
+        return []
+    best = np.zeros(len(ids))
+    for q in queries:
+        _, ident, _, _ = nearest(q, M, 1)
+        best = np.maximum(best, ident)
+    return [ids[i] for i in range(len(ids)) if best[i] >= floor]
+
+
 def load_reference():
-    """Unique sequences with the records, species, BINs and countries behind each."""
+    """Unique sequences with the records, species, BINs and countries behind each (suspicious records left out)."""
     con = sqlite3.connect(DB)
     groups = collections.OrderedDict()
     q = """SELECT r.record_id, r.species, r.bin_uri, r.country, r.suspicious, s.nuc
            FROM records r JOIN sequences s USING(record_id)
-           WHERE r.marker_code='COI-5P' AND s.nuc IS NOT NULL"""
+           WHERE r.marker_code='COI-5P' AND s.nuc IS NOT NULL AND r.suspicious = 0"""
     for rid, sp, bn, co, sus, nuc in con.execute(q):
         # Keep BOLD's alignment gaps ("-"): they pad each record to the common frame, so a
         # record starting 25 bases in still lines up. Gaps count as unknown when comparing.
@@ -67,15 +96,12 @@ def load_reference():
             continue
         g = groups.setdefault(seq, {"ids": [], "species": collections.Counter(),
                                     "bins": collections.Counter(),
-                                    "countries": collections.Counter(), "suspicious": 0,
-                                    "sus_ids": []})
+                                    "countries": collections.Counter(), "suspicious": 0})
         g["ids"].append(rid)
         g["species"][sp] += 1
         g["bins"][bn] += 1
         g["countries"][co] += 1
         g["suspicious"] += sus
-        if sus:
-            g["sus_ids"].append(rid)
     return list(groups.keys()), list(groups.values())
 
 
@@ -190,7 +216,7 @@ def distance_matrix(A):
     return D
 
 
-def build_one(spec_seq, spec, seqs, groups, R, k):
+def build_one(spec_seq, spec, seqs, groups, R, k, sus=None):
     q = encode(spec_seq)
     order, ident, cmp_, shift = nearest(q, R, k)
     A = np.vstack([q] + [repair_indels(align_to_query(R[i, :len(seqs[i])], shift[i], len(q)), q) for i in order])
@@ -205,10 +231,10 @@ def build_one(spec_seq, spec, seqs, groups, R, k):
             "species": unnamed(g["species"]), "bins": unnamed(g["bins"]),
             "countries": unnamed(g["countries"]), "suspicious": g["suspicious"],
         })
-        if g["sus_ids"]:
-            nb[-1]["sus_ids"] = g["sus_ids"]
-    return {"reference_sequences": len(seqs), "k": len(nb), "neighbours": nb,
-            "dist": D.tolist()}
+    out = {"reference_sequences": len(seqs), "k": len(nb), "neighbours": nb, "dist": D.tolist()}
+    if sus and nb:
+        out["sus"] = near_suspicious(sus, [q], min(float(ident[i]) for i in order))
+    return out
 
 
 def write_js(path, prefix, obj):
@@ -239,6 +265,7 @@ def main():
     R = np.full((len(seqs), MAX_LEN), PAD, dtype=np.uint8)
     for i, s in enumerate(seqs):
         R[i, :len(s)] = encode(s)
+    sus = load_suspicious()
 
     slug = make_slug(load_own())
 
@@ -252,7 +279,7 @@ def main():
         if h in built:
             continue
         built[h] = True
-        out = build_one(qseq, spec, seqs, groups, R, a.k)
+        out = build_one(qseq, spec, seqs, groups, R, a.k, sus)
         out["hash"] = h
         write_js(os.path.join(a.out, h + ".js"), 'window.DNA_REF=window.DNA_REF||{};window.DNA_REF["%s"]=' % h, out)
     if not a.specimen:

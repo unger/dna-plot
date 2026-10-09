@@ -60,6 +60,7 @@ def main():
     summary = json.loads(open("ref/summary.js", encoding="utf8").read().split("=", 1)[1].rstrip(";"))
     con = sqlite3.connect(br.DB)
     seqs, groups = br.load_reference()
+    sus = br.load_suspicious()
     R = np.full((len(seqs), br.MAX_LEN), br.PAD, dtype=np.uint8)
     for i, s in enumerate(seqs):
         R[i, :len(s)] = br.encode(s)
@@ -129,10 +130,10 @@ def main():
                 "countries": br.unnamed(g["countries"]), "suspicious": g["suspicious"],
                 "inbin": bool(in_bin[i]),
             })
-            if g["sus_ids"]:
-                nb[-1]["sus_ids"] = g["sus_ids"]
         out = {"own": [{"slugs": v, "n": len(v)} for v in variants.values()],
                "reference_sequences": len(seqs), "k": len(nb), "neighbours": nb, "dist": D.tolist()}
+        if nb:
+            out["sus"] = br.near_suspicious(sus, q, min(best[i] for i in chosen))
         br.write_js("ref/sp_%s.js" % h, 'window.DNA_REF_SP=window.DNA_REF_SP||{};window.DNA_REF_SP["%s"]=' % h, out)
         print(name, len(variants), "variants,", len(nb), "refs,", int(in_bin[chosen].sum()), "in BINs")
     br.write_js("ref/species.js", "window.DNA_REF_SPECIES=", overview)

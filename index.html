@@ -2086,13 +2086,10 @@
   // The records marked suspicious among a page's reference sequences, with the reason they were left out
   // (window.DNA_REF_SUS, from scripts/build_reference.py; ids per sequence group in nb.sus_ids).
   function refSusHtml(ref) {
-    var all = window.DNA_REF_SUS || {}, seen = {}, items = [];
-    ref.neighbours.forEach(function (nb) {
-      (nb.sus_ids || []).forEach(function (id) { if (!seen[id]) { seen[id] = 1; items.push(id); } });
-    });
+    var all = window.DNA_REF_SUS || {}, items = ref.sus || [];
     if (!items.length) return "";
     return '<div class="seq-header"><h3>Misstänkta sekvenser</h3></div>' +
-      '<div class="chart-note">Utesluts ur plotten och listan ovan (kontaminering eller felbestämning).</div>' +
+      '<div class="chart-note">Utesluts ur plotten, listorna och räkningarna (kontaminering eller felbestämning); visas här om de ligger nära.</div>' +
       '<ul class="list species-rows refbox">' + items.map(function (id) {
         var x = all[id] || {};
         return '<li><span class="li-main"><span class="sci">' + (x.species ? "<i>" + esc(x.species) + "</i>" : "okänd art") + "</span>" +
