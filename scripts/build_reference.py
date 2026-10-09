@@ -56,29 +56,31 @@ def load_suspicious():
     """The records marked suspicious: (ids, matrix of their sequences). They are kept apart from the
     reference sequences everywhere; pages list the ones near what they show, with the reason."""
     con = sqlite3.connect(DB)
-    ids, seqs = [], []
-    for rid, nuc in con.execute("""SELECT r.record_id, s.nuc FROM records r JOIN sequences s USING(record_id)
+    ids, seqs, meta = [], [], {}
+    for rid, nuc, sp, bn in con.execute("""SELECT r.record_id, s.nuc, r.species, r.bin_uri FROM records r JOIN sequences s USING(record_id)
                                    WHERE r.marker_code='COI-5P' AND r.suspicious = 1 AND s.nuc IS NOT NULL"""):
         seq = nuc.upper()
         if MIN_COMPARED <= len(seq.replace("-", "")) and len(seq) <= MAX_LEN:
             ids.append(rid)
             seqs.append(seq)
+            meta[rid] = (sp or "", bn or "")
     M = np.full((len(seqs), MAX_LEN), PAD, dtype=np.uint8)
     for i, s in enumerate(seqs):
         M[i, :len(s)] = encode(s)
-    return ids, M
+    return ids, M, meta
 
 
-def near_suspicious(sus, queries, floor):
-    """Ids of the suspicious sequences at least as alike (best offset) to any of the queries as `floor`."""
-    ids, M = sus
+def near_suspicious(sus, queries, floor, keep=None):
+    """Ids of the suspicious sequences at least as alike (best offset) to any of the queries as `floor`;
+    keep(species, bin) can narrow them down further."""
+    ids, M, meta = sus
     if not ids:
         return []
     best = np.zeros(len(ids))
     for q in queries:
         _, ident, _, _ = nearest(q, M, 1)
         best = np.maximum(best, ident)
-    return [ids[i] for i in range(len(ids)) if best[i] >= floor]
+    return [ids[i] for i in range(len(ids)) if best[i] >= floor and (keep is None or keep(*meta[ids[i]]))]
 
 
 def load_reference():

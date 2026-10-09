@@ -133,7 +133,9 @@ def main():
         out = {"own": [{"slugs": v, "n": len(v)} for v in variants.values()],
                "reference_sequences": len(seqs), "k": len(nb), "neighbours": nb, "dist": D.tolist()}
         if nb:
-            out["sus"] = br.near_suspicious(sus, q, min(best[i] for i in chosen))
+            # only suspicious records that belong to the species: in one of its BINs or carrying its name
+            out["sus"] = br.near_suspicious(sus, q, min(best[i] for i in chosen),
+                                            lambda sp, bn: bn in species_bins or norm(sp) == bold_name)
         br.write_js("ref/sp_%s.js" % h, 'window.DNA_REF_SP=window.DNA_REF_SP||{};window.DNA_REF_SP["%s"]=' % h, out)
         print(name, len(variants), "variants,", len(nb), "refs,", int(in_bin[chosen].sum()), "in BINs")
     br.write_js("ref/species.js", "window.DNA_REF_SPECIES=", overview)
