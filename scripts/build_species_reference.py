@@ -33,8 +33,9 @@ def top(counter, n):
 
 
 def bin_overview(con, name):
-    """How BOLD uses the species name: records and BINs, and who else is in those BINs."""
-    rows = con.execute("SELECT bin_uri, COUNT(*) FROM records WHERE species = ? GROUP BY bin_uri", (name,)).fetchall()
+    """How BOLD uses the species name: records and BINs, and who else is in those BINs.
+    Records marked suspicious are left out."""
+    rows = con.execute("SELECT bin_uri, COUNT(*) FROM records WHERE species = ? AND suspicious = 0 GROUP BY bin_uri", (name,)).fetchall()
     bins = []
     for bin_uri, n in sorted(rows, key=lambda r: -r[1]):
         if bin_uri is None:
@@ -43,7 +44,7 @@ def bin_overview(con, name):
         countries = collections.Counter()
         total = 0
         for sp, co, c in con.execute(
-                "SELECT species, country, COUNT(*) FROM records WHERE bin_uri = ? GROUP BY species, country", (bin_uri,)):
+                "SELECT species, country, COUNT(*) FROM records WHERE bin_uri = ? AND suspicious = 0 GROUP BY species, country", (bin_uri,)):
             total += c
             countries[co or ""] += c
             if sp != name:
@@ -116,6 +117,7 @@ def main():
         _, _, _, own_shift = br.nearest(q[0], Rown, len(q))
         rows = [br.align_to_query(Rown[i, :len(q[i])], own_shift[i], ql) for i in range(len(q))]
         rows += [br.align_to_query(R[i, :len(seqs[i])], shift0[i], ql) for i in chosen]
+        rows = rows[:1] + [br.repair_indels(r, rows[0]) for r in rows[1:]]  # one missing base is not 30 substitutions
         D = br.distance_matrix(np.vstack(rows))
 
         nb = []
@@ -127,6 +129,8 @@ def main():
                 "countries": br.unnamed(g["countries"]), "suspicious": g["suspicious"],
                 "inbin": bool(in_bin[i]),
             })
+            if g["sus_ids"]:
+                nb[-1]["sus_ids"] = g["sus_ids"]
         out = {"own": [{"slugs": v, "n": len(v)} for v in variants.values()],
                "reference_sequences": len(seqs), "k": len(nb), "neighbours": nb, "dist": D.tolist()}
         br.write_js("ref/sp_%s.js" % h, 'window.DNA_REF_SP=window.DNA_REF_SP||{};window.DNA_REF_SP["%s"]=' % h, out)

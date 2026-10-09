@@ -49,7 +49,8 @@ def main():
         if not h:
             continue
         if h not in cache:
-            cache[h] = load_js("ref/%s.js" % h)["neighbours"]
+            # sequences only suspicious records have are not evidence for or against a name
+            cache[h] = [nb for nb in load_js("ref/%s.js" % h)["neighbours"] if nb["suspicious"] < nb["n"]]
         nbs = cache[h]
         own = norm(rec.get("Vetenskapligt namn"))
         named = [nb for nb in nbs if any(k for k in nb["species"])]

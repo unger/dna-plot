@@ -67,13 +67,85 @@ def load_reference():
             continue
         g = groups.setdefault(seq, {"ids": [], "species": collections.Counter(),
                                     "bins": collections.Counter(),
-                                    "countries": collections.Counter(), "suspicious": 0})
+                                    "countries": collections.Counter(), "suspicious": 0,
+                                    "sus_ids": []})
         g["ids"].append(rid)
         g["species"][sp] += 1
         g["bins"][bn] += 1
         g["countries"][co] += 1
         g["suspicious"] += sus
+        if sus:
+            g["sus_ids"].append(rid)
     return list(groups.keys()), list(groups.values())
+
+
+MAX_INDEL = 3        # longest insertion / deletion (bases) repaired
+MIN_INDEL_GAIN = 6   # it must remove at least this many mismatches
+MIN_INDEL_TAIL = 15  # ... and be backed by at least this many compared bases after the indel
+
+
+def find_indel(row, ref):
+    """A single insertion/deletion in `row` relative to `ref` (both code arrays in the same frame).
+
+    Past such an indel a column-by-column comparison sees every base as shifted, so one missing
+    base near the end of a read looks like dozens of substitutions (a false 5 % distance). Returns
+    (p, d) when moving row[p:] by d columns (d > 0: bases missing in row, d < 0: extra bases)
+    removes at least MIN_INDEL_GAIN mismatches, else None."""
+    L = min(len(row), len(ref))
+    row, ref = row[:L], ref[:L]
+    ok = (row < 4) & (ref < 4)
+    pre = np.concatenate([[0], np.cumsum(ok & (row != ref))])  # pre[i]: mismatches in [0, i)
+    base = int(pre[L])
+    best = None
+    for d in range(-MAX_INDEL, MAX_INDEL + 1):
+        if d == 0 or L <= abs(d):
+            continue
+        a = row[max(0, -d):L - max(0, d)]
+        b = ref[max(0, d):L - max(0, -d)]
+        okd = (a < 4) & (b < 4)
+        mis = okd & (a != b)
+        start = max(0, -d)                       # row index of a[0]
+        suf = np.zeros(L + 1, dtype=int)         # suf[i]: mismatches of row[i:] against ref[i + d:]
+        suf[start:start + len(a)] = np.cumsum(mis[::-1])[::-1]
+        cmp_ = np.zeros(L + 1, dtype=int)
+        cmp_[start:start + len(a)] = np.cumsum(okd[::-1])[::-1]
+        total = pre + suf
+        total[cmp_ < MIN_INDEL_TAIL] = base + 1  # too little left after the indel to trust
+        i = int(np.argmin(total))
+        gain = base - int(total[i])
+        if gain >= MIN_INDEL_GAIN and int(suf[i]) <= 0.1 * int(cmp_[i]) and (best is None or gain > best[0]):
+            best = (gain, i, d)
+    return None if best is None else (best[1], best[2])
+
+
+def apply_indel(row, p, d, fill):
+    """Bring row[p:] back in step: insert d fillers at p (d > 0) or drop -d bases there (d < 0);
+    the length stays the same (the end is cut or padded with the filler)."""
+    if d > 0:
+        return row[:p] + fill * d + row[p:len(row) - d]
+    k = -d
+    return row[:p] + row[p + k:] + fill * k
+
+
+def repair_indels(row, ref, fill=None, rounds=2):
+    """row repaired against ref (see find_indel); N (code 4) fills the gaps. Works on code arrays or strings."""
+    is_str = isinstance(row, str)
+    if fill is None:
+        fill = "N" if is_str else np.array([4], dtype=np.uint8)
+    for _ in range(rounds):
+        a = encode(row) if is_str else row
+        hit = find_indel(a, ref)
+        if hit is None:
+            break
+        p, d = hit
+        row = apply_indel(row, p, d, fill) if is_str else _apply_codes(row, p, d)
+    return row
+
+
+def _apply_codes(row, p, d):
+    if d > 0:
+        return np.concatenate([row[:p], np.full(d, 4, dtype=row.dtype), row[p:len(row) - d]])
+    return np.concatenate([row[:p], row[p - d:], np.full(-d, 4, dtype=row.dtype)])
 
 
 def nearest(q, R, k):
@@ -121,18 +193,20 @@ def distance_matrix(A):
 def build_one(spec_seq, spec, seqs, groups, R, k):
     q = encode(spec_seq)
     order, ident, cmp_, shift = nearest(q, R, k)
-    A = np.vstack([q] + [align_to_query(R[i, :len(seqs[i])], shift[i], len(q)) for i in order])
+    A = np.vstack([q] + [repair_indels(align_to_query(R[i, :len(seqs[i])], shift[i], len(q)), q) for i in order])
     D = distance_matrix(A)
     nb = []
-    for i in order:
+    for j, i in enumerate(order):
         g = groups[i]
         nb.append({
-            "identity": round(float(ident[i]) * 100, 2),
+            "identity": round(max(float(ident[i]) * 100, 100 - D[0][j + 1] / 10), 2),
             "compared": int(cmp_[i]), "shift": int(shift[i]),
             "n": len(g["ids"]), "ids": g["ids"][:5],
             "species": unnamed(g["species"]), "bins": unnamed(g["bins"]),
             "countries": unnamed(g["countries"]), "suspicious": g["suspicious"],
         })
+        if g["sus_ids"]:
+            nb[-1]["sus_ids"] = g["sus_ids"]
     return {"reference_sequences": len(seqs), "k": len(nb), "neighbours": nb,
             "dist": D.tolist()}
 
@@ -183,6 +257,12 @@ def main():
         write_js(os.path.join(a.out, h + ".js"), 'window.DNA_REF=window.DNA_REF||{};window.DNA_REF["%s"]=' % h, out)
     if not a.specimen:
         write_js(os.path.join(a.out, "index.js"), "window.DNA_REF_INDEX=", index)
+        # The records marked suspicious, with the reason, for the lists of excluded sequences
+        con = sqlite3.connect(DB)
+        sus = {rid: {"species": sp or "", "country": co or "", "bin": b or "", "reason": why or ""}
+               for rid, sp, co, b, why in con.execute(
+                   "SELECT record_id, species, country, bin_uri, suspicious_reason FROM records WHERE suspicious = 1")}
+        write_js(os.path.join(a.out, "suspicious.js"), "window.DNA_REF_SUS=", sus)
     total = sum(os.path.getsize(os.path.join(a.out, f)) for f in os.listdir(a.out))
     print(len(index), "specimens ->", len(built), "files,", total, "bytes in", a.out)
 

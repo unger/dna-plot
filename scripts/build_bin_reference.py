@@ -124,18 +124,24 @@ def main():
     cons = {}
     for b in sorted(wanted):
         rows = con.execute(
-            """SELECT r.record_id, r.species, r.country, r.suspicious, s.nuc FROM records r
+            """SELECT r.record_id, r.species, r.country, r.suspicious, s.nuc, r.suspicious_reason FROM records r
                JOIN sequences s USING(record_id)
                WHERE r.bin_uri = ? AND r.marker_code = 'COI-5P' AND s.nuc IS NOT NULL""", (b,)).fetchall()
         anchor_seq = collections.Counter(r[4].upper() for r in rows if "-" not in r[4] and len(r[4]) >= 640).most_common(1) or             collections.Counter(r[4].upper() for r in rows).most_common(1)
         anchor = br.encode(anchor_seq[0][0]) if anchor_seq else None
         by_seq = collections.OrderedDict()
-        for rid, sp, co, sus, nuc in rows:
+        flagged = [{"id": rid, "species": sp or "", "country": co or "", "reason": why or ""}
+                   for rid, sp, co, sus, nuc, why in rows if sus]  # listed on the BIN page with the reason
+        for rid, sp, co, sus, nuc, why in rows:
             nuc = nuc.upper()
             if anchor is not None:
-                nuc = in_bin_frame(nuc, anchor)
+                nuc = br.repair_indels(in_bin_frame(nuc, anchor), anchor)
             g = by_seq.setdefault(nuc, {"ids": [], "species": collections.Counter(),
-                                                "countries": collections.Counter(), "suspicious": 0})
+                                                "countries": collections.Counter(), "suspicious": 0,
+                                                "ok": 0, "species_ok": collections.Counter()})
+            g["ok"] += 0 if sus else 1  # the overview and the consensus leave suspicious records out
+            if not sus:
+                g["species_ok"][sp] += 1
             g["ids"].append(rid)
             g["species"][sp] += 1
             g["countries"][co] += 1
@@ -143,16 +149,17 @@ def main():
         out_seqs = [{"s": s, "n": len(g["ids"]), "ids": g["ids"][:5], "species": br.unnamed(g["species"]),
                      "countries": br.unnamed(g["countries"]), "suspicious": g["suspicious"]}
                     for s, g in sorted(by_seq.items(), key=lambda kv: -len(kv[1]["ids"]))]
-        out_own = [{"s": in_bin_frame(own_in_frame(q, R), anchor) if anchor is not None else own_in_frame(q, R), "slugs": sl} for q, sl in own_by_bin.get(b, {}).items()]
+        out_own = [{"s": br.repair_indels(in_bin_frame(own_in_frame(q, R), anchor), anchor) if anchor is not None else own_in_frame(q, R), "slugs": sl} for q, sl in own_by_bin.get(b, {}).items()]
         key = b.split(":")[-1]
         br.write_js("ref/bin_%s.js" % key, 'window.DNA_REF_BIN=window.DNA_REF_BIN||{};window.DNA_REF_BIN["%s"]=' % b,
-                    {"bin": b, "seqs": out_seqs, "own": out_own})
+                    {"bin": b, "seqs": out_seqs, "own": out_own, "sus": flagged})
 
-        cons[b] = consensus(by_seq)
+        clean = {q: {"ids": range(g["ok"])} for q, g in by_seq.items() if g["ok"]}
+        cons[b] = consensus(clean)
         sp_total = collections.Counter()
         for g in by_seq.values():
-            sp_total.update(g["species"])
-        overview[b] = {"file": key, "n": len(rows), "variants": len(out_seqs),
+            sp_total.update(g["species_ok"])
+        overview[b] = {"file": key, "n": sum(g["ok"] for g in by_seq.values()), "variants": len(clean),
                        "species": br.unnamed(collections.Counter(dict(sp_total.most_common(TOP)))),
                        "n_species": len(sp_total),
                        "names": [k for k, _ in sp_total.most_common() if k], "own": sum(len(v) for v in own_by_bin.get(b, {}).values())}
