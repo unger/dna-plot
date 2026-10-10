@@ -7,12 +7,19 @@ Checks (COI-5P records not already marked suspicious):
                 single indel; BOLD's BINs are normally within ~2.2 %
   name_outlier  a named record that is clearly nearer to records of another species than to any record of
                 its own species (by NAME_MARGIN %), i.e. probably misidentified or mixed up
+  bin_minority_name  a named record whose BIN is dominated by another species (its own name is a small
+                minority there) and whose sequence is clearly nearer that species than its own name's records
+                in other BINs. Judged per record, so sequences shared by several species and species with
+                only 2-3 records are not hidden
+  name_swap     an X-named record in a BIN of Y plus a Y-named record in a BIN of X: the names look exchanged
   stop_codon    translation (invertebrate mitochondrial code) of the record's frame has stop codons
 Review the list, then mark the ones you agree with:
   UPDATE records SET suspicious=1, suspicious_reason='...' WHERE record_id='...';
 and rebuild the reference files.
 """
 import collections
+import itertools
+import os
 import re
 import sqlite3
 
@@ -23,8 +30,13 @@ import build_reference as br
 
 BIN_OUTLIER = 3.0   # % to the nearest other record in the BIN
 NAME_MARGIN = 1.5   # % the nearest other-species record must be closer than the nearest same-species one
+MAJORITY_SHARE = 0.6    # a BIN's majority name is at least this share of its named records
+MINORITY_SHARE = 0.2    # bin_minority_name: the record's name is at most this share
+SWAP_SHARE = 0.5        # name_swap: looser, for small BINs (e.g. 1 of 3)
+ESTABLISHED = 3         # name_outlier: a name with this many records in a BIN, at least half of its named ones, is not a slip
 MIN_COMPARED = 400
 OUT = "data/bold/suspicious_candidates.tsv"
+SYNONYMS = "scripts/name_synonyms.tsv"  # old name <TAB> accepted name; compared as the accepted name
 STOPS = {"TAA", "TAG"}  # TGA codes for Trp in invertebrate mitochondria
 
 
@@ -41,6 +53,43 @@ def repaired_dist(a, b):
     ok = (r < 4) & (b < 4)
     n = ok.sum()
     return 100.0 * ((r != b) & ok).sum() / n if n >= MIN_COMPARED else np.nan
+
+
+def proper_name(n):
+    """Only "Genus species" counts as a name; "sp.", "group", codes and the like are placeholders."""
+    return bool(re.fullmatch(r"[A-Z][a-z]+ [a-z]+", n or "")) and not n.endswith(" sp")
+
+
+def edit_distance(a, b):
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def name_fixes(rows):
+    """old name -> (accepted name, reason). Names in SYNONYMS count as their accepted name, and a name that is
+    1-2 letters from a much commoner name in the same BIN is taken as a misspelling of it. Such records are
+    not suspicious, so they are compared under the accepted name."""
+    fixes = {}
+    if os.path.exists(SYNONYMS):
+        for line in open(SYNONYMS, encoding="utf8"):
+            if line.strip() and not line.startswith("#"):
+                old, new = line.rstrip("\n").split("\t")[:2]
+                fixes[old] = (new, "synonym")
+    count = collections.Counter(r[1] for r in rows if proper_name(r[1]))
+    in_bin = collections.defaultdict(set)
+    for r in rows:
+        if r[2] and proper_name(r[1]):
+            in_bin[r[2]].add(r[1])
+    for names in in_bin.values():
+        for a, b in itertools.permutations(sorted(names), 2):
+            if a not in fixes and count[a] * 3 <= count[b] and edit_distance(a, b) <= 2:
+                fixes[a] = (b, "misspelling")
+    return fixes
 
 
 def stop_candidates(rows):
@@ -61,6 +110,10 @@ def main():
            JOIN sequences s USING(record_id)
            WHERE r.marker_code='COI-5P' AND s.nuc IS NOT NULL AND r.suspicious=0""").fetchall()
     rows = [(rid, sp or "", b or "", co or "", nuc.upper()) for rid, sp, b, co, nuc in rows if len(nuc) <= br.MAX_LEN]
+    fixes = name_fixes(rows)
+    for old, (new, why) in sorted(fixes.items()):
+        print("%s -> %s (%s, %d record(s))" % (old, new, why, sum(1 for r in rows if r[1] == old)))
+    rows = [(rid, fixes.get(sp, (sp,))[0], b, co, nuc) for rid, sp, b, co, nuc in rows]
     cands = collections.defaultdict(list)  # record_id -> [(check, detail)]
     meta = {r[0]: r for r in rows}
 
@@ -89,8 +142,7 @@ def main():
     for r in rows:
         recs_of[idx[r[4]]].append(r)
     # only proper species names count ("Genus species"); "sp.", "group", codes and the like are placeholders
-    names_of = [{r[1] for r in recs_of[i] if re.fullmatch(r"[A-Z][a-z]+ [a-z]+", r[1] or "") and not r[1].endswith(" sp")}
-                for i in range(len(useqs))]
+    names_of = [{r[1] for r in recs_of[i] if proper_name(r[1])} for i in range(len(useqs))]
 
     # --- BIN outliers: nearest other record in the same BIN
     by_bin = collections.defaultdict(set)
@@ -114,6 +166,14 @@ def main():
                     cands[r[0]].append(("bin_outlier", "%.1f %% from the nearest of %d others in %s" % (best, len(members) - 1, b)))
 
     # --- name outliers: nearest same-species vs nearest other-species record
+    n_name_bin = collections.Counter((r[2], r[1]) for r in rows if r[2] and proper_name(r[1]))
+    n_bin = collections.Counter(r[2] for r in rows if r[2] and proper_name(r[1]))
+
+    def established(r):
+        """Several records with the same name in the BIN, at least half of its named records: more than a slip,
+        so the other-named records there are the odd ones (or a species COI barely separates)."""
+        return n_name_bin[r[2], r[1]] >= ESTABLISHED and 2 * n_name_bin[r[2], r[1]] >= n_bin[r[2]]
+
     mask = collections.defaultdict(lambda: np.zeros(len(useqs), dtype=bool))
     for j, nm in enumerate(names_of):
         for n in nm:
@@ -143,11 +203,67 @@ def main():
             ro = min([repaired_dist(R[i], R[j]) for j in jo] or [np.inf])
             rs = np.inf if np.isnan(rs) else rs
             ro = np.inf if np.isnan(ro) else ro
-            if rs - ro >= NAME_MARGIN:
+            # a name without any other record is no evidence (synonym, or a species COI cannot tell apart)
+            if np.isfinite(rs) and rs - ro >= NAME_MARGIN:
                 near = ", ".join(sorted(names_of[jo[int(np.nanargmin([repaired_dist(R[i], R[j]) for j in jo]))]]))
-                own = "%.1f %% from the nearest of its own name" % rs if np.isfinite(rs) else "no other record with its name"
+                own = "%.1f %% from the nearest of its own name" % rs
                 for r in recs_of[i]:
+                    if established(r):
+                        continue
                     cands[r[0]].append(("name_outlier", "%s; %.1f %% from %s" % (own, ro, near)))
+    # --- a name in a BIN of another species, and exchanged names. Judged per record rather than per unique
+    # sequence, so a sequence shared by several species does not hide a record's own name.
+    seqs_of = collections.defaultdict(lambda: collections.defaultdict(set))  # name -> bin -> unique sequences
+    named_in = collections.defaultdict(list)  # bin -> records with a proper name
+    for r in rows:
+        if proper_name(r[1]):
+            seqs_of[r[1]][r[2]].add(idx[r[4]])
+            if r[2]:
+                named_in[r[2]].append(r)
+    near_cache = {}
+
+    def nearest(i, js, key):
+        """% from sequence i to the nearest of the sequences js (the lower of plain and indel-repaired)."""
+        if (i, key) not in near_cache:
+            js = sorted(js)
+            out = np.inf
+            if i in js:
+                out = 0.0
+            elif js:
+                d = pdist(R[i], R[js])
+                if not np.all(np.isnan(d)):
+                    order = [k for k in np.argsort(np.where(np.isnan(d), 1e9, d))[:5] if not np.isnan(d[k])]
+                    out = min([np.nanmin(d)] + [x for x in (repaired_dist(R[i], R[js[k]]) for k in order) if not np.isnan(x)])
+            near_cache[i, key] = out
+        return near_cache[i, key]
+
+    dissent = []  # (record, own name, majority name, bin, majority count, named count, own count, dM, dX)
+    for b, mem in named_in.items():
+        cnt = collections.Counter(r[1] for r in mem)
+        top = cnt.most_common(2)
+        M, mc = top[0]
+        if len(mem) < 3 or (len(top) > 1 and top[1][1] == mc) or mc / len(mem) < MAJORITY_SHARE:
+            continue
+        for r in mem:
+            X = r[1]
+            if X == M or cnt[X] >= mc or cnt[X] / len(mem) > SWAP_SHARE:
+                continue
+            i = idx[r[4]]
+            elsewhere = set().union(*[v for k, v in seqs_of[X].items() if k != b])
+            dM = nearest(i, seqs_of[M][b], ("in", M, b))
+            dX = nearest(i, elsewhere, ("out", X, b))
+            if dM <= BIN_OUTLIER and np.isfinite(dX) and dX - dM >= NAME_MARGIN:
+                dissent.append((r, X, M, b, mc, len(mem), cnt[X], dM, dX))
+    by_names = collections.defaultdict(list)
+    for t in dissent:
+        by_names[t[1], t[2]].append(t)
+    for r, X, M, b, mc, n, nx, dM, dX in dissent:
+        partners = sorted(p[0][0] for p in by_names.get((M, X), []) if p[3] != b)
+        if partners:
+            cands[r[0]].append(("name_swap", "name probably exchanged with %s (%s sits in a %s BIN)" % (", ".join(partners[:3]), M, X)))
+        if nx / n <= MINORITY_SHARE:
+            cands[r[0]].append(("bin_minority_name", "%s is %d of %d named in %s (mostly %s); %.1f %% from %s, %s" % (
+                X, nx, n, b, M, dM, M, "%.1f %% from its own name elsewhere" % dX)))
     with open(OUT, "w", encoding="utf8") as f:
         f.write("record_id\tbin\tspecies\tcountry\tchecks\tdetail\n")
         for rid in sorted(cands, key=lambda k: (-len({c for c, _ in cands[k]}), k)):
