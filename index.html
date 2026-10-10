@@ -2091,10 +2091,15 @@
     return '<div class="seq-header"><h3>Misstänkta sekvenser</h3></div>' +
       '<div class="chart-note">Utesluts ur plotten, listorna och räkningarna (kontaminering eller felbestämning); visas här om de ligger nära.</div>' +
       '<ul class="list species-rows refbox">' + items.map(function (id) {
-        var x = all[id] || {};
+        var x = all[id] || {}, reason = x.reason || "";
+        // the epithet is enough: the genus is the same throughout
+        if (x.species) reason = reason.replace("från egna namnet", "från " + x.species.split(" ").slice(1).join(" "));
         return '<li><span class="li-main"><span class="sci">' + (x.species ? "<i>" + esc(x.species) + "</i>" : "okänd art") + "</span>" +
           '<span class="common">' + esc([x.bin, x.country].filter(Boolean).join(" · ")) + "</span>" +
-          (x.reason ? '<span class="common">' + esc(x.reason) + "</span>" : "") + "</span>" +
+          (reason ? '<span class="common">' + esc(reason) + "</span>" : "") +
+          (ref.sus_ident && ref.sus_ident[id] != null
+            ? '<span class="common">' + (100 - ref.sus_ident[id]).toFixed(1).replace(".", ",") + " % skillnad från denna individ</span>" : "") +
+          "</span>" +
           '<span class="li-meta"><a class="bold-link" target="_blank" rel="noopener" href="https://portal.boldsystems.org/record/' +
           encodeURIComponent(id.split(".")[0]) + '">' + esc(id.split(".")[0]) + " →</a></span></li>";
       }).join("") + "</ul>";

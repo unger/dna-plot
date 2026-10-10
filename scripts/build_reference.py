@@ -70,9 +70,9 @@ def load_suspicious():
     return ids, M, meta
 
 
-def near_suspicious(sus, queries, floor, keep=None):
+def near_suspicious(sus, queries, floor, keep=None, identities=None):
     """Ids of the suspicious sequences at least as alike (best offset) to any of the queries as `floor`;
-    keep(species, bin) can narrow them down further."""
+    keep(species, bin) can narrow them down further. If `identities` is a dict, it gets id -> % identity."""
     ids, M, meta = sus
     if not ids:
         return []
@@ -80,7 +80,10 @@ def near_suspicious(sus, queries, floor, keep=None):
     for q in queries:
         _, ident, _, _ = nearest(q, M, 1)
         best = np.maximum(best, ident)
-    return [ids[i] for i in range(len(ids)) if best[i] >= floor and (keep is None or keep(*meta[ids[i]]))]
+    found = [ids[i] for i in range(len(ids)) if best[i] >= floor and (keep is None or keep(*meta[ids[i]]))]
+    if identities is not None:
+        identities.update({i: round(float(best[ids.index(i)]) * 100, 1) for i in found})
+    return found
 
 
 def load_reference():
@@ -235,7 +238,8 @@ def build_one(spec_seq, spec, seqs, groups, R, k, sus=None):
         })
     out = {"reference_sequences": len(seqs), "k": len(nb), "neighbours": nb, "dist": D.tolist()}
     if sus and nb:
-        out["sus"] = near_suspicious(sus, [q], min(float(ident[i]) for i in order))
+        out["sus_ident"] = {}  # id -> % identity to this specimen
+        out["sus"] = near_suspicious(sus, [q], min(float(ident[i]) for i in order), identities=out["sus_ident"])
     return out
 
 
