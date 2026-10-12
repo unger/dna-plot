@@ -173,6 +173,8 @@
   .hist .bar { fill: #2a78d6; }
   .hist .hbar:hover .bar, .hist .hbar.hl .bar { fill: #1d5fae; }
   .hist .bar.own { fill: #eb6834; }
+  .hist .bar.own.binown { fill: #222; }
+  .hist .hbar:hover .bar.own.binown, .hist .hbar.hl .bar.own.binown { fill: #555; }
   .hist .hbar:hover .bar.own, .hist .hbar.hl .bar.own { fill: #c4501f; }
   .hist .cnt { fill: var(--text); font-size: 11px; text-anchor: middle; }
   .tip-near { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; color: var(--muted); }
@@ -1046,10 +1048,10 @@
     var groups = coiGroups(members, 0), gOf = {};
     groups.forEach(function (g, gi) { g.members.forEach(function (r) { gOf[r.__slug] = gi; }); });
     var nNoCoi = members.length - Object.keys(gOf).length, nMain = groups.length;
-    var hist = '<div class="seq-header"><h3>Fördelning av COI-varianter</h3></div>' +
-      '<div class="chart-note">En stapel per unik COI-variant, höjden är antal individer. ' +
-      "Avståndet mellan två grannstaplar motsvarar deras skillnad i procent (N ignoreras); " +
-      "ordningen följer släktträdet.</div>" +
+    var hist = '<div class="seq-header"><h3>Fördelning av COI-varianter</h3>' +
+      (hasSpeciesRef(sp) ? '<a class="tree-link" href="' + speciesHistHash(sp) + '">Med BOLD-data →</a>' : "") + "</div>" +
+      '<div class="chart-note">En stapel per antal bp som skiljer från den vanligaste COI-varianten (längst till vänster; N ignoreras). ' +
+      "Höjden är andel av individerna, siffran antal. X-axeln är fast (0–10 % skillnad), så avståndet säger hur stor skillnaden verkligen är.</div>" +
       '<div class="plot-wrap hist"><div id="hist"></div><div class="tip" id="hist-tip" hidden></div></div>';
     // Groups of the main species come first, so the rows' data-g indices stay valid.
     others.forEach(function (o, k) { groups = groups.concat(coiGroups(o.members, k + 1)); });
@@ -1448,49 +1450,50 @@
     });
   }
 
-  // Bar chart of one species' COI variants: bar height = individuals, bars in
-  // tree leaf order, spaced so the gap between neighbours = their % difference.
+  // Bar chart of one species' COI variants, same logic as the BIN page's: the commonest variant sits at
+  // x = 0, variants the same number of bp from it are one bar, placed on a fixed x scale (% difference
+  // from the commonest, 0-10 %); bar height = share of the individuals.
   function drawHist(groups, hl) {
-    var n = groups.length, i, j, D = [], order = [];
-    function pctDiff(a, b) { return 100 - coiIdentity(a.members[0]["COI"], b.members[0]["COI"]).pct; }
-    if (n >= 3) {
-      for (i = 0; i < n; i++) { D[i] = []; for (j = 0; j < n; j++) D[i][j] = i === j ? 0 : pctDiff(groups[i], groups[j]); }
-      (function leaves(nd) {
-        if (!nd.children.length) order.push(nd.id); else nd.children.forEach(leaves);
-      })(rootTree(neighborJoin(D), n));
-    } else {
-      for (i = 0; i < n; i++) order.push(i);
-    }
-    var pos = [0], gaps = [];
-    for (i = 1; i < n; i++) {
-      gaps.push(pctDiff(groups[order[i - 1]], groups[order[i]]));
-      pos.push(pos[i - 1] + gaps[i - 1]);
-    }
-    var span = pos[n - 1], minGap = n > 1 ? Math.min.apply(null, gaps) : 0;
+    var N = groups.length, i, topG = 0;
+    for (i = 1; i < N; i++) if (groups[i].members.length > groups[topG].members.length) topG = i;
+    var byD = {}, bars0 = [], totalInd = 0;
+    groups.forEach(function (g, k) {
+      var id = k === topG ? { diffs: 0, pct: 100 } : coiIdentity(groups[topG].members[0]["COI"], g.members[0]["COI"]);
+      var d = id.diffs, c = g.members.length;
+      totalInd += c;
+      if (!byD[d]) { byD[d] = { d: d, ks: [], ms: [], w: 0, sum: 0 }; bars0.push(byD[d]); }
+      byD[d].ks.push(k);
+      byD[d].ms = byD[d].ms.concat(g.members);
+      byD[d].w += c; byD[d].sum += c * (100 - id.pct);
+    });
+    bars0.sort(function (a, b) { return a.d - b.d; });
+    var n = bars0.length;
+    bars0.forEach(function (b) { b.p = b.d ? b.sum / b.w : 0; });
 
-    var W = 420, H = 170, L = 30, R = 10, T = 18, B = 34, PW = W - L - R, PH = H - T - B;
-    var bw = 22, sc = 0;
-    if (span > 0) {
-      sc = (PW - bw) / span;
-      bw = Math.max(4, Math.min(22, minGap * sc - 2));
-      sc = (PW - bw) / span;
-    }
-    function cx(k) { return span > 0 ? L + bw / 2 + pos[k] * sc : L + PW / 2; }
-    var maxC = Math.max.apply(null, groups.map(function (g) { return g.members.length; }));
-    var step = 1;
-    [1, 2, 5, 10, 20, 50, 100].forEach(function (c) { if (maxC / c >= 2) step = c; });
-    var top = Math.ceil(maxC / step) * step;
-    function y(v) { return T + PH - v / top * PH; }
+    var W = 420, H = 206, L = 34, R = 10, T = 18, B = 50, PW = W - L - R, PH = H - T - B;
+    var xMax = Math.max(10, Math.ceil(bars0[n - 1].p / 5) * 5), bw = 6, px = [0];
+    for (i = 1; i < n; i++) px.push(Math.max(px[i - 1] + bw + 1, bars0[i].p / xMax * (PW - bw)));
+    if (px[n - 1] > PW - bw) { var f = (PW - bw) / px[n - 1]; px = px.map(function (v) { return v * f; }); }
+    function cx(k) { return n > 1 ? L + bw / 2 + px[k] : L + bw / 2; }
+    function y(v) { return T + PH - v / 100 * PH; }
+    function fmt(p) { return p.toFixed(p < 10 ? 2 : 1).replace(".", ",") + " %"; }
+    function share(c) { return 100 * c / totalInd; }
+    function fmtShare(p) { return (p < 10 ? p.toFixed(1).replace(".", ",") : Math.round(p)) + " %"; }
 
-    var grid = "";
-    for (var v = 0; v <= top; v += step) {
+    var grid = "", v;
+    for (v = 0; v <= 100; v += 25) {
       grid += '<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '"/>' +
-        '<text class="ax" x="' + (L - 6) + '" y="' + y(v).toFixed(1) + '" dy="0.35em">' + v + "</text>";
+        '<text class="ax" x="' + (L - 6) + '" y="' + y(v).toFixed(1) + '" dy="0.35em">' + v + " %</text>";
     }
-    var bars = order.map(function (k, idx) {
-      var c = groups[k].members.length, x0 = cx(idx) - bw / 2, y0 = y(c), yb = y(0);
+    var xTicks = "", xv;
+    for (xv = 0; xv <= xMax; xv += xMax > 10 ? 5 : 2) {
+      var tx = (L + bw / 2 + xv / xMax * (PW - bw)).toFixed(1);
+      xTicks += '<line class="grid" x1="' + tx + '" x2="' + tx + '" y1="' + y(0) + '" y2="' + (y(0) + 4) + '"/>' +
+        '<text class="ax" x="' + tx + '" y="' + (y(0) + 16) + '" style="text-anchor:middle">' + xv + " %</text>";
+    }
+    var bars = bars0.map(function (bk, idx) {
+      var c = bk.ms.length, x0 = cx(idx) - bw / 2, y0 = y(share(c)), yb = y(0);
       var r = Math.min(4, bw / 2, yb - y0);
-      // Hit target reaches halfway to each neighbour; count shown only when it fits.
       var hl0 = idx > 0 ? Math.min(22, (cx(idx) - cx(idx - 1)) / 2) : 22;
       var hr0 = idx < n - 1 ? Math.min(22, (cx(idx + 1) - cx(idx)) / 2) : 22;
       var d = "M" + x0.toFixed(1) + "," + yb + "V" + (y0 + r).toFixed(1) +
@@ -1498,39 +1501,39 @@
         "H" + (x0 + bw - r).toFixed(1) +
         "Q" + (x0 + bw).toFixed(1) + "," + y0.toFixed(1) + " " + (x0 + bw).toFixed(1) + "," + (y0 + r).toFixed(1) +
         "V" + yb + "Z";
-      return '<g class="hbar" data-k="' + k + '" data-i="' + idx + '">' +
+      return '<g class="hbar" data-ks=" ' + bk.ks.join(" ") + ' " data-i="' + idx + '">' +
         '<rect class="hit" x="' + (cx(idx) - hl0).toFixed(1) + '" y="' + T + '" width="' + (hl0 + hr0).toFixed(1) + '" height="' + PH + '"/>' +
         '<path class="bar" d="' + d + '"/>' +
         (Math.min(hl0, hr0) >= 7 ? '<text class="cnt" x="' + cx(idx).toFixed(1) + '" y="' + (y0 - 5).toFixed(1) + '">' + c + "</text>" : "") +
         "</g>";
     }).join("");
-    // Gap labels under the baseline, only where there is room for them.
-    function fmt(p) { return p.toFixed(p < 10 ? 2 : 1).replace(".", ",") + " %"; }
-    var gapLbl = gaps.map(function (g, idx) {
-      var a = cx(idx), b = cx(idx + 1);
-      return b - a >= 44
-        ? '<line class="gap" x1="' + (a + 1).toFixed(1) + '" x2="' + (b - 1).toFixed(1) + '" y1="' + (H - 22) + '" y2="' + (H - 22) + '"/>' +
-          '<text class="ax gap-t" x="' + ((a + b) / 2).toFixed(1) + '" y="' + (H - 8) + '">' + fmt(g) + "</text>"
-        : "";
-    }).join("");
+    // Gap labels under the axis, only where there is room for them.
+    var gapLbl = "";
+    for (i = 1; i < n; i++) {
+      var ga = cx(i - 1), gb = cx(i);
+      if (gb - ga >= 44) {
+        gapLbl += '<line class="gap" x1="' + (ga + 1).toFixed(1) + '" x2="' + (gb - 1).toFixed(1) + '" y1="' + (H - 22) + '" y2="' + (H - 22) + '"/>' +
+          '<text class="ax gap-t" x="' + ((ga + gb) / 2).toFixed(1) + '" y="' + (H - 8) + '">' + fmt(bars0[i].p - bars0[i - 1].p) + "</text>";
+      }
+    }
 
     var el = document.getElementById("hist");
-    el.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Stapeldiagram över ' + n +
-      ' unika COI-varianter">' + grid + gapLbl + bars +
+    el.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Stapeldiagram över ' + N +
+      ' unika COI-varianter">' + grid + xTicks + gapLbl + bars +
       '<line class="base" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(0) + '" y2="' + y(0) + '"/></svg>';
 
     var tip = document.getElementById("hist-tip"), wrap = el.parentNode;
     Array.prototype.forEach.call(el.querySelectorAll("g.hbar"), function (g) {
-      var k = +g.getAttribute("data-k"), idx = +g.getAttribute("data-i"), ms = groups[k].members;
+      var idx = +g.getAttribute("data-i"), bk = bars0[idx], ms = bk.ms;
       chartTip(g, wrap, tip, function (touch) {
-        g.classList.add("hl"); hl(k, true);
+        g.classList.add("hl"); bk.ks.forEach(function (k) { hl(k, true); });
         tip.innerHTML = "<strong>" + ms.length + (ms.length === 1 ? " individ" : " individer") + "</strong>" +
           ms.slice(0, 8).map(function (r) {
             return "<div>" + esc([r["Samlings-nummer"] || r["ID"], r["Provins"]].filter(Boolean).join(" · ")) + "</div>";
           }).join("") + (ms.length > 8 ? "<div>+" + (ms.length - 8) + " till</div>" : "") +
-          (idx > 0 ? "<div>← " + fmt(gaps[idx - 1]) + " till vänster granne</div>" : "") +
-          (idx < n - 1 ? "<div>→ " + fmt(gaps[idx]) + " till höger granne</div>" : "") + touchHint(touch);
-      }, function () { g.classList.remove("hl"); hl(k, false); }, function () { goDetail(ms[0]); });
+          "<div>" + fmtShare(share(ms.length)) + " av individerna" + (idx ? " · " + bk.d + " bp (" + fmt(bk.p) + ") från vanligaste varianten" : " · vanligaste varianten") + "</div>" +
+          (bk.ks.length > 1 ? "<div>" + bk.ks.length + " olika varianter</div>" : "") + touchHint(touch);
+      }, function () { g.classList.remove("hl"); bk.ks.forEach(function (k) { hl(k, false); }); }, function () { goDetail(ms[0]); });
     });
   }
 
@@ -1590,7 +1593,7 @@
       rowsOf(k).forEach(function (li) { li.classList.toggle("hl", on); });
       var c = plotEl.querySelector('circle[data-k="' + k + '"]');
       if (c) c.classList.toggle("hl", on);
-      var hb = document.querySelector('#hist g.hbar[data-k="' + k + '"]');
+      var hb = document.querySelector('#hist g.hbar[data-ks~="' + k + '"]');
       if (hb) hb.classList.toggle("hl", on);
     }
     Array.prototype.forEach.call(plotEl.querySelectorAll("circle.pt"), function (c) {
@@ -2057,7 +2060,12 @@
         return ref.own.length + (ref.own.length === 1 ? " egen COI-variant" : " egna COI-varianter") + " · " + ref.k +
           " referenssekvenser ur BOLD (artens BIN:ar först, sedan de närmaste)";
       },
-      note: "◇ = artens egna COI-varianter (ihåliga, så punkter under syns; hovra för individerna)", ownTip: true
+      note: "◇ = artens egna COI-varianter (ihåliga, så punkter under syns; hovra för individerna)", ownTip: true,
+      head: function () {
+        var bins = info ? speciesPlotBins(info).slice(0, BIN_MAX) : [];
+        return '<div class="subtitle"><a href="' + speciesHistHash(sp) + '">COI-fördelning för namnet →</a>' +
+          (bins.length ? ' · <a href="' + binHistHash(bins) + '">COI-fördelning för artens BIN:ar →</a>' : "") + "</div>";
+      }
     };
   }
   function refOwnCount(ref) { return ref.own ? ref.own.length : 1; }
@@ -2690,7 +2698,9 @@
              "</option>";
         }).join("") + "</datalist>";
     }
-    return '<div class="bin-pick">' + chips + add + "</div>";
+    return '<div class="bin-pick">' + chips + add + "</div>" +
+      (add ? '<div class="chart-note">&ldquo;Närmaste först&rdquo; jämför BIN:arnas konsensussekvenser. BOLD räknar på enskilda sekvenser, ' +
+        "så deras närmaste granne (NN) kan avvika i enstaka fall.</div>" : "");
   }
 
   function binHeadHtml(ref, mode, bins, hashFn, linkFn) {
@@ -2739,7 +2749,8 @@
       sub: function (r) {
         var ownN = r.own.reduce(function (t, o) { return t + o.n; }, 0);
         return bins.length + (bins.length === 1 ? " BIN" : " BIN:ar") + " · " + r.k + " sekvenser ur BOLD · " +
-          ownN + (ownN === 1 ? " eget fynd" : " egna fynd");
+          ownN + (ownN === 1 ? " eget fynd" : " egna fynd") +
+          ' · <a href="' + binHistHash(bins) + '">COI-fördelning →</a>';
       },
       note: "svart romb = dina egna fynd i BIN:arna (hovra för individerna)", ownTip: true, solidOwn: true, noDiff: true,
       listTitle: "Sekvenser i valda BIN:ar",
@@ -2784,11 +2795,16 @@
     files.forEach(function (f, fi) {
       f.seqs.forEach(function (g) { items.push({ fi: fi, g: g, codes: binCodes(g.s), bold: g.n, own: [] }); });
     });
-    function pct(a, b) { // % difference over positions where both have A/C/G/T
+    function diffs(a, b) { // [differing positions, compared positions], both having A/C/G/T
       var len = Math.min(a.length, b.length), cmp = 0, diff = 0, p;
       for (p = 0; p < len; p++) if (a[p] < 4 && b[p] < 4) { cmp++; if (a[p] !== b[p]) diff++; }
-      return cmp ? 100 * diff / cmp : 100;
+      return [diff, cmp];
     }
+    function pct(a, b) { // % difference over positions where both have A/C/G/T
+      var d = diffs(a, b);
+      return d[1] ? 100 * d[0] / d[1] : 100;
+    }
+    function total(it) { return it.bold + it.own.length; }
     var ownN = 0;
     files.forEach(function (f, fi) {
       f.own.map(function (o) {
@@ -2801,81 +2817,29 @@
         hit.own = hit.own.concat(o.slugs);
       });
     });
-    var n = items.length, i, j, D = [], order = [];
-    for (i = 0; i < n; i++) D[i] = [];
-    for (i = 0; i < n; i++) for (j = i + 1; j < n; j++) D[i][j] = D[j][i] = pct(items[i].codes, items[j].codes);
-    for (i = 0; i < n; i++) D[i][i] = 0;
-    if (n >= 3) {
-      (function leaves(nd) { if (!nd.children.length) order.push(nd.id); else nd.children.forEach(leaves); })(rootTree(neighborJoin(D), n));
-    } else {
-      for (i = 0; i < n; i++) order.push(i);
-    }
-    var gaps = [], zeros = 0, minGap = Infinity;
-    for (i = 1; i < n; i++) {
-      gaps.push(D[order[i - 1]][order[i]]);
-      if (gaps[i - 1] < 0.005) zeros++; else minGap = Math.min(minGap, gaps[i - 1]);
-    }
-    var span = gaps.reduce(function (t, g) { return g < 0.005 ? t : t + g; }, 0);
-    var W = 640, H = 190, L = 30, R = 10, T = 18, B = 34, PW = W - L - R, PH = H - T - B;
-    // Pixel position per bar: a gap is drawn in proportion, except identical-looking neighbours (0,00 %),
-    // which sit right next to each other. The bars are at most half the smallest real gap wide, so any real
-    // difference is visibly further apart than none.
-    var bw = 22, sc = 0, px = [0];
-    if (span > 0) {
-      bw = Math.max(3, Math.min(22, minGap * PW / span / 2));
-      sc = Math.max(0, (PW - bw - zeros * (bw + 1)) / span);
-    } else {
-      bw = Math.max(3, Math.min(22, (PW - bw) / Math.max(n, 1) - 1));
-    }
-    for (i = 1; i < n; i++) px.push(px[i - 1] + (gaps[i - 1] < 0.005 ? bw + 1 : gaps[i - 1] * sc));
-    function cx(k) { return n > 1 ? L + bw / 2 + px[k] : L + PW / 2; }
-    function total(it) { return it.bold + it.own.length; }
-    var maxC = Math.max.apply(null, items.map(total));
-    var step = 1;
-    [1, 2, 5, 10, 20, 50, 100].forEach(function (c) { if (maxC / c >= 2) step = c; });
-    var top = Math.ceil(maxC / step) * step;
-    function y(v) { return T + PH - v / top * PH; }
-    function fmt(p) { return p.toFixed(p < 10 ? 2 : 1).replace(".", ",") + " %"; }
     function binColor(fi) { return fi < REF_COLORS.length ? REF_COLORS[fi] : REF_OTHER; }
-
-    var grid = "", v;
-    for (v = 0; v <= top; v += step) {
-      grid += '<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '"/>' +
-        '<text class="ax" x="' + (L - 6) + '" y="' + y(v).toFixed(1) + '" dy="0.35em">' + v + "</text>";
-    }
-    var bars = order.map(function (k, idx) {
-      var it = items[k], c = total(it), x0 = cx(idx) - bw / 2, y0 = y(c), yb = y(0), r = Math.min(4, bw / 2, yb - y0);
-      var hl0 = idx > 0 ? Math.min(22, (cx(idx) - cx(idx - 1)) / 2) : 22;
-      var hr0 = idx < n - 1 ? Math.min(22, (cx(idx + 1) - cx(idx)) / 2) : 22;
-      var d = "M" + x0.toFixed(1) + "," + yb + "V" + (y0 + r).toFixed(1) +
-        "Q" + x0.toFixed(1) + "," + y0.toFixed(1) + " " + (x0 + r).toFixed(1) + "," + y0.toFixed(1) +
-        "H" + (x0 + bw - r).toFixed(1) +
-        "Q" + (x0 + bw).toFixed(1) + "," + y0.toFixed(1) + " " + (x0 + bw).toFixed(1) + "," + (y0 + r).toFixed(1) +
-        "V" + yb + "Z";
-      var lower = it.own.length && it.bold // the BOLD part below the own part
-        ? '<rect class="bar" style="fill:' + binColor(it.fi) + '" x="' + x0.toFixed(1) + '" y="' + y(it.bold).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + (yb - y(it.bold)).toFixed(1) + '"/>'
-        : "";
-      return '<g class="hbar" data-k="' + k + '">' +
-        '<rect class="hit" x="' + (cx(idx) - hl0).toFixed(1) + '" y="' + T + '" width="' + (hl0 + hr0).toFixed(1) + '" height="' + PH + '"/>' +
-        '<path class="bar' + (it.own.length ? " own" : "") + '"' + (it.own.length ? "" : ' style="fill:' + binColor(it.fi) + '"') + ' d="' + d + '"/>' + lower +
-        (Math.min(hl0, hr0) >= 7 ? '<text class="cnt" x="' + cx(idx).toFixed(1) + '" y="' + (y0 - 5).toFixed(1) + '">' + c + "</text>" : "") +
-        "</g>";
-    }).join("");
-    var gapLbl = gaps.map(function (g, idx) {
-      var a = cx(idx), b = cx(idx + 1);
-      return b - a >= 44
-        ? '<line class="gap" x1="' + (a + 1).toFixed(1) + '" x2="' + (b - 1).toFixed(1) + '" y1="' + (H - 22) + '" y2="' + (H - 22) + '"/>' +
-          '<text class="ax gap-t" x="' + ((a + b) / 2).toFixed(1) + '" y="' + (H - 8) + '">' + fmt(g) + "</text>"
-        : "";
-    }).join("");
-
+    var gbpStart = 1;
     var boldN = 0, nSeqs = 0;
     files.forEach(function (f) { nSeqs += f.seqs.length; f.seqs.forEach(function (g) { boldN += g.n; }); });
     var onlyRec = only && slugMap[only];
     var legend = files.map(function (f, fi) {
       return '<span class="sw-dot" style="background:' + binColor(fi) + '"></span>' + esc(f.bin) + " · ";
-    }).join("") + '<span class="sw-dot" style="background:#eb6834"></span>egna fynd';
-    view.innerHTML = '<a class="back" href="' + binHash(bins) + '">&larr; Till BIN-plotten</a>' +
+    }).join("") + '<span class="sw-dot" style="background:#222"></span>egna fynd';
+    // Pairwise % difference and bp difference between all unique sequences, computed once
+    var all = items, N = all.length, DA = [], BP = [], i, j;
+    for (i = 0; i < N; i++) { DA[i] = []; BP[i] = []; }
+    for (i = 0; i < N; i++) {
+      DA[i][i] = 0; BP[i][i] = 0;
+      for (j = i + 1; j < N; j++) {
+        var dd = diffs(all[i].codes, all[j].codes);
+        DA[i][j] = DA[j][i] = dd[1] ? 100 * dd[0] / dd[1] : 100;
+        BP[i][j] = BP[j][i] = dd[0];
+      }
+    }
+    histView({
+      files: files, all: items, DA: DA, BP: BP,
+      legend: legend,
+      head: '<a class="back" href="' + binHash(bins) + '">&larr; Till BIN-plotten</a>' +
       '<div class="card"><h2>COI-varianter i ' + bins.map(esc).join(" + ") + "</h2>" +
       '<div class="subtitle">' + boldN + (boldN === 1 ? " post" : " poster") + " ur BOLD i " + nSeqs +
         (nSeqs === 1 ? " unik sekvens" : " unika sekvenser") + " · " + ownN + (ownN === 1 ? " eget fynd" : " egna fynd") +
@@ -2885,24 +2849,201 @@
         function (bin) { return '<a href="' + binHash([bin]) + '">Plotta →</a>'; }) +
       (only ? '<div class="chart-note">Visar bara ' + esc(onlyRec ? (onlyRec["Samlings-nummer"] || onlyRec["ID"] || only) : only) +
           (ownN ? "" : " – individen finns inte bland egna fynd i de här BIN:arna") +
-          ' · <a href="' + binHistHash(bins) + '">Visa alla egna fynd</a></div>' : "") +
-      '<div class="chart-note">En stapel per unik sekvens, höjden är antal BOLD-poster. Avståndet mellan två grannstaplar ' +
-        "motsvarar deras skillnad i procent (N ignoreras); ordningen följer släktträdet. " + legend + "</div>" +
-      '<div class="plot-wrap hist"><div id="hist"></div><div class="tip" id="hist-tip" hidden></div></div></div>';
+          ' · <a href="' + binHistHash(bins) + '">Visa alla egna fynd</a></div>' : ""),
+      bind: function () {
     var inp = document.getElementById("bin-add");
-    if (inp) inp.addEventListener("change", function () {
-      var b = binKnown(inp.value);
-      if (b && bins.indexOf(b) === -1) setHash(binHistHash(bins.concat(b), only).slice(1));
-      else inp.value = "";
+        if (inp) inp.addEventListener("change", function () {
+          var b = binKnown(inp.value);
+          if (b && bins.indexOf(b) === -1) setHash(binHistHash(bins.concat(b), only).slice(1));
+          else inp.value = "";
+        });
+      }
     });
+  }
+
+  // --- Species name page (#/sh/<art>): distribution of the COI variants of all BOLD records with the
+  // name, from the data of the species reference page (ref/sp_*.js: the nearest sequences with the
+  // distances between them). bp differences are recovered from the % (tenths) and are approximate.
+  function speciesHistHash(sp) { return "#/sh/" + encodeURIComponent(sp.slug); }
+
+  function renderSpeciesHist(sp) {
+    var token = ++refToken, info = window.DNA_REF_SPECIES[sp.name];
+    view.innerHTML = '<a class="back" href="' + speciesRefHash(sp) + '">&larr; Till referensdata</a>' +
+      '<div class="card"><p class="empty">Läser in referensdata…</p></div>';
+    loadRef({ src: "ref/sp_" + info.file + ".js", store: "DNA_REF_SP", hash: info.file }, function (ref) {
+      if (token !== refToken) return;
+      if (!ref) { view.querySelector(".card").innerHTML = '<p class="empty">Ingen referensdata hittades.</p>'; return; }
+      var own = ref.own || [], ownCount = own.length, items = [], rows = [];
+      ref.neighbours.forEach(function (nb, k) {
+        var c = nb.species[sp.name] || 0;
+        if (!c || nb.suspicious >= nb.n) return;
+        items.push({ fi: 0, g: nb, bold: c, own: [], row: k + ownCount });
+      });
+      var ownN = 0;
+      own.forEach(function (o, oi) {
+        ownN += o.slugs.length;
+        var hit = null;
+        items.forEach(function (it) { if (!hit && it.row >= 0 && ref.dist[oi][it.row] === 0) hit = it; });
+        if (!hit) { hit = { fi: 0, g: null, bold: 0, own: [], row: oi }; items.push(hit); }
+        hit.own = hit.own.concat(o.slugs);
+      });
+      var N = items.length, DA = [], BP = [], i, j;
+      for (i = 0; i < N; i++) {
+        DA[i] = []; BP[i] = [];
+        for (j = 0; j < N; j++) {
+          DA[i][j] = i === j ? 0 : ref.dist[items[i].row][items[j].row] / 10;
+          BP[i][j] = Math.round(DA[i][j] * 6.58);
+        }
+      }
+      var boldN = items.reduce(function (t, it) { return t + it.bold; }, 0);
+      histView({
+        files: [{ bin: "BOLD-poster med namnet" }], all: items, DA: DA, BP: BP,
+        legend: '<span class="sw-dot" style="background:' + REF_COLORS[0] + '"></span>BOLD-poster med namnet · <span class="sw-dot" style="background:#222"></span>egna fynd',
+        head: '<a class="back" href="' + speciesRefHash(sp) + '">&larr; Till referensdata</a>' +
+          '<div class="card"><h2>COI-varianter för <i>' + esc(sp.name) + "</i></h2>" +
+          '<div class="subtitle">' + boldN + (boldN === 1 ? " post" : " poster") + " ur BOLD med namnet i " + (N - items.filter(function (it) { return !it.bold; }).length) +
+            " unika sekvenser · " + ownN + (ownN === 1 ? " eget fynd" : " egna fynd") +
+            ' · <a href="' + speciesRefHash(sp) + '">Referensdata →</a>' +
+            ((info.bins || []).length ? ' · <a href="' + binHistHash(info.bins.map(function (b) { return b.bin; }).slice(0, BIN_MAX)) + '">COI-fördelning per BIN →</a>' : "") + "</div>" +
+          '<div class="chart-note">Bara sekvenser bland de ' + ref.k + ' närmaste i referensdatan; bp räknas om från procentskillnaden och är ungefärliga.</div>'
+      });
+    });
+  }
+
+  // The shared chart page of the COI distribution pages: cfg = { files: [{bin: label}] (one per colour),
+  // all: unique sequences [{fi, g, bold, own: [slugs]}], DA/BP: their pairwise % and bp differences,
+  // head: html above the chart, legend, bind() }.
+  function histView(cfg) {
+    var files = cfg.files, all = cfg.all, N = all.length, DA = cfg.DA, BP = cfg.BP, i, j;
+    function total(it) { return it.bold + it.own.length; }
+    function binColor(fi) { return fi < REF_COLORS.length ? REF_COLORS[fi] : REF_OTHER; }
+    var gbpStart = 1;
+    view.innerHTML = cfg.head +
+      '<div class="chart-note">En stapel per antal bp som skiljer från den högsta sekvensen (längst till vänster; N ignoreras). Höjden är andel av posterna, siffran antal. ' +
+        "X-axeln är fast (0–10 % skillnad från den högsta), så avståndet säger hur stor skillnaden verkligen är. " + cfg.legend + "</div>" +
+      '<div class="plot-wrap hist"><div id="hist"></div><div class="tip" id="hist-tip" hidden></div></div>' +
+      '<div class="ctl"><span class="lbl">Gruppera lika</span>' +
+        '<input type="range" id="hist-group" min="0" max="' + REF_GROUP_MAX + '" step="1" value="' + gbpStart + '">' +
+        '<span class="ctl-val" id="hist-group-val">' + (gbpStart ? "≤ " + gbpStart + " bp" : "Av") + "</span></div></div>";
+    if (cfg.bind) cfg.bind();
+    // Merge sequences within <= gbp differences (same BIN, single linkage) into one bar
+    function groupItems(gbp) {
+      var par = all.map(function (_, k) { return k; });
+      function find(k) { while (par[k] !== k) k = par[k] = par[par[k]]; return k; }
+      if (gbp > 0) for (i = 0; i < N; i++) for (j = i + 1; j < N; j++) {
+        if (all[i].fi === all[j].fi && BP[i][j] <= gbp) par[find(i)] = find(j);
+      }
+      var byRoot = {}, out = [];
+      all.forEach(function (it, k) {
+        var r = find(k);
+        if (!byRoot[r]) out.push(byRoot[r] = []);
+        byRoot[r].push(k);
+      });
+      return out.map(mergeItems);
+    }
+    // One item from several unique sequences (indices into all): counts added, the biggest is the representative
+    function mergeItems(ms) {
+      var grp = { fi: all[ms[0]].fi, members: ms, bold: 0, own: [], g: null, rep: ms[0] };
+      ms.forEach(function (k) {
+        grp.bold += all[k].bold;
+        grp.own = grp.own.concat(all[k].own);
+        if (total(all[k]) > total(all[grp.rep])) grp.rep = k;
+      });
+      grp.codes = all[grp.rep].codes;
+      if (ms.length === 1) { grp.g = all[grp.rep].g; return grp; }
+      var sp = {}, co = {}, bestG = null;
+      ms.forEach(function (k) {
+        var g = all[k].g;
+        if (!g) return;
+        Object.keys(g.species || {}).forEach(function (x) { sp[x] = (sp[x] || 0) + g.species[x]; });
+        Object.keys(g.countries || {}).forEach(function (x) { co[x] = (co[x] || 0) + g.countries[x]; });
+        if (!bestG || g.n > bestG.n) bestG = g;
+      });
+      grp.g = bestG && { species: sp, countries: co, ids: bestG.ids, n: grp.bold };
+      return grp;
+    }
+    var items, n, order, dist, tot, pctTop;
+    function draw(gbp) {
+    var base = groupItems(gbp);
+    tot = base.reduce(function (t, it) { return t + total(it); }, 0) || 1;
+    // The tallest group sits at x = 0. Everything that differs from it by the same number of bp (in the
+    // same BIN) is one bar, placed by its % difference from the tallest, whichever positions differ.
+    var topB = base[0];
+    base.forEach(function (it) { if (total(it) > total(topB)) topB = it; });
+    var byKey = {}, keys = [];
+    base.forEach(function (it) {
+      var d = BP[topB.rep][it.rep], key = d + "|" + it.fi;
+      if (!byKey[key]) { byKey[key] = { d: d, fi: it.fi, ms: [] }; keys.push(byKey[key]); }
+      byKey[key].ms = byKey[key].ms.concat(it.members);
+    });
+    keys.sort(function (a, b) { return a.d - b.d || a.fi - b.fi; });
+    items = keys.map(function (kk) { return mergeItems(kk.ms); });
+    n = items.length;
+    dist = keys.map(function (kk) { return kk.d; });
+    pctTop = items.map(function (it, k) { // count-weighted mean % difference from the tallest group
+      if (!dist[k]) return 0;
+      var w = 0, sum = 0;
+      it.members.forEach(function (m) { var c = total(all[m]); w += c; sum += c * DA[topB.rep][m]; });
+      return w ? sum / w : 0;
+    });
+    order = items.map(function (_, k) { return k; });
+    var W = 640, H = 206, L = 34, R = 10, T = 18, B = 50, PW = W - L - R, PH = H - T - B;
+    // Fixed x scale, 0-10 % from the tallest (longer only if a bar is further away), so a small
+    // difference never looks like the largest possible one.
+    var xMax = Math.max(10, Math.ceil((pctTop[n - 1] || 0) / 5) * 5), bw = 6, px = [0];
+    for (i = 1; i < n; i++) px.push(Math.max(px[i - 1] + bw + 1, pctTop[i] / xMax * (PW - bw)));
+    if (px[n - 1] > PW - bw) { var f = (PW - bw) / px[n - 1]; px = px.map(function (v) { return v * f; }); }
+    function cx(k) { return n > 1 ? L + bw / 2 + px[k] : L + bw / 2; }
+    function pc(c) { return 100 * c / tot; }
+    function y(v) { return T + PH - v / 100 * PH; }
+    function fmt(p) { return p.toFixed(p < 10 ? 2 : 1).replace(".", ",") + " %"; }
+    function fmtShare(p) { return (p < 10 ? p.toFixed(1).replace(".", ",") : Math.round(p)) + " %"; }
+
+    var grid = "", v;
+    for (v = 0; v <= 100; v += 25) {
+      grid += '<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '"/>' +
+        '<text class="ax" x="' + (L - 6) + '" y="' + y(v).toFixed(1) + '" dy="0.35em">' + v + " %</text>";
+    }
+    var xTicks = "", xv;
+    for (xv = 0; xv <= xMax; xv += xMax > 10 ? 5 : 2) {
+      xTicks += '<line class="grid" x1="' + (L + bw / 2 + xv / xMax * (PW - bw)).toFixed(1) + '" x2="' + (L + bw / 2 + xv / xMax * (PW - bw)).toFixed(1) + '" y1="' + y(0) + '" y2="' + (y(0) + 4) + '"/>' +
+        '<text class="ax" x="' + (L + bw / 2 + xv / xMax * (PW - bw)).toFixed(1) + '" y="' + (y(0) + 16) + '" style="text-anchor:middle">' + xv + " %</text>";
+    }
+    var bars = order.map(function (k) {
+      var it = items[k], c = total(it), x0 = cx(k) - bw / 2, y0 = y(pc(c)), yb = y(0), r = Math.min(4, bw / 2, yb - y0);
+      var hl0 = k > 0 ? Math.min(22, (cx(k) - cx(k - 1)) / 2) : 22;
+      var hr0 = k < n - 1 ? Math.min(22, (cx(k + 1) - cx(k)) / 2) : 22;
+      var d = "M" + x0.toFixed(1) + "," + yb + "V" + (y0 + r).toFixed(1) +
+        "Q" + x0.toFixed(1) + "," + y0.toFixed(1) + " " + (x0 + r).toFixed(1) + "," + y0.toFixed(1) +
+        "H" + (x0 + bw - r).toFixed(1) +
+        "Q" + (x0 + bw).toFixed(1) + "," + y0.toFixed(1) + " " + (x0 + bw).toFixed(1) + "," + (y0 + r).toFixed(1) +
+        "V" + yb + "Z";
+      var lower = it.own.length && it.bold // the BOLD part below the own part
+        ? '<rect class="bar" style="fill:' + binColor(it.fi) + '" x="' + x0.toFixed(1) + '" y="' + y(pc(it.bold)).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + (yb - y(pc(it.bold))).toFixed(1) + '"/>'
+        : "";
+      return '<g class="hbar" data-k="' + k + '">' +
+        '<rect class="hit" x="' + (cx(k) - hl0).toFixed(1) + '" y="' + T + '" width="' + (hl0 + hr0).toFixed(1) + '" height="' + PH + '"/>' +
+        '<path class="bar' + (it.own.length ? " own binown" : "") + '"' + (it.own.length ? "" : ' style="fill:' + binColor(it.fi) + '"') + ' d="' + d + '"/>' + lower +
+        (Math.min(hl0, hr0) >= 7 ? '<text class="cnt" x="' + cx(k).toFixed(1) + '" y="' + (y0 - 5).toFixed(1) + '">' + c + "</text>" : "") +
+        "</g>";
+    }).join("");
+    var gapLbl = "";
+    for (i = 1; i < n; i++) {
+      var ga = cx(i - 1), gb = cx(i);
+      if (gb - ga >= 44) {
+        gapLbl += '<line class="gap" x1="' + (ga + 1).toFixed(1) + '" x2="' + (gb - 1).toFixed(1) + '" y1="' + (H - 22) + '" y2="' + (H - 22) + '"/>' +
+          '<text class="ax gap-t" x="' + ((ga + gb) / 2).toFixed(1) + '" y="' + (H - 8) + '">' + fmt(pctTop[i] - pctTop[i - 1]) + "</text>";
+      }
+    }
+
     var el = document.getElementById("hist");
     el.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Stapeldiagram över ' + n +
-      ' unika sekvenser">' + grid + gapLbl + bars +
+      ' unika sekvenser">' + grid + xTicks + gapLbl + bars +
       '<line class="base" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(0) + '" y2="' + y(0) + '"/></svg>';
 
     var tip = document.getElementById("hist-tip"), wrap = el.parentNode;
     Array.prototype.forEach.call(el.querySelectorAll("g.hbar"), function (gEl) {
-      var k = +gEl.getAttribute("data-k"), idx = order.indexOf(k), it = items[k];
+      var k = +gEl.getAttribute("data-k"), it = items[k];
       var recs = it.own.map(function (sl) { return slugMap[sl]; }).filter(Boolean);
       chartTip(gEl, wrap, tip, function (touch) {
         gEl.classList.add("hl");
@@ -2914,13 +3055,20 @@
             recs.slice(0, 8).map(function (r) {
               return "<div>" + esc([r["Samlings-nummer"] || r["ID"], r.__taxon || r["Vetenskapligt namn"], r["Provins"], r["Lokalnamn"], r["Startdatum"]].filter(Boolean).join(" · ")) + "</div>";
             }).join("") + (recs.length > 8 ? "<div>+" + (recs.length - 8) + " till</div>" : "") : "") +
-          (idx > 0 ? "<div>← " + fmt(gaps[idx - 1]) + " till vänster granne</div>" : "") +
-          (idx < n - 1 ? "<div>→ " + fmt(gaps[idx]) + " till höger granne</div>" : "") +
+          "<div>" + fmtShare(pc(total(it))) + " av posterna" + (!dist[k] ? " · högsta stapeln" : " · " + dist[k] + " bp (" + fmt(pctTop[k]) + ") från högsta stapeln") +
+            (it.members.length > 1 ? "<div>" + it.members.length + " olika sekvenser</div>" : "") + "</div>" +
           (it.g ? '<div class="tip-near">' + esc(it.g.ids[0].split(".")[0]) + "</div>" : "") + touchHint(touch);
       }, function () { gEl.classList.remove("hl"); }, function () {
         if (recs.length) goDetail(recs[0]);
         else if (it.g) window.open("https://portal.boldsystems.org/record/" + encodeURIComponent(it.g.ids[0].split(".")[0]), "_blank", "noopener");
       });
+    });
+    }
+    draw(gbpStart);
+    var gEl0 = document.getElementById("hist-group");
+    gEl0.addEventListener("input", function () {
+      document.getElementById("hist-group-val").textContent = this.value > 0 ? "≤ " + this.value + " bp" : "Av";
+      draw(+this.value);
     });
     window.scrollTo(0, 0);
   }
@@ -3054,7 +3202,8 @@
 
     var plotBins = info ? speciesPlotBins(info) : [];
     html += '<div class="seq-header"><h3>BOLD:s BIN:ar för arten</h3>' +
-      (plotBins.length ? '<a class="tree-link" href="' + binHash(plotBins.slice(0, BIN_MAX)) + '">Plotta artens BIN:ar →</a>' : "") + "</div>";
+      (info && info.named && hasSpeciesRef(sp) ? '<a class="tree-link" href="' + speciesHistHash(sp) + '">COI-fördelning för namnet →</a> · ' : "") +
+      (plotBins.length ? '<a class="tree-link" href="' + binHistHash(plotBins.slice(0, BIN_MAX)) + '">COI-fördelning →</a> · <a class="tree-link" href="' + binHash(plotBins.slice(0, BIN_MAX)) + '">Plotta artens BIN:ar →</a>' : "") + "</div>";
     if (!info) return html + '<div class="chart-note">Namnet kan inte slås upp i BOLD (inget artnamn).</div>';
     if (!info.named) return html + '<div class="chart-note">Namnet finns inte på några poster i det hämtade BOLD-datat.</div>';
     var ownIn = info.own_bins || {}, listed = {};
@@ -3196,6 +3345,9 @@
     } else if (parts[0] === "sr" && parts[1]) {
       var rsp = speciesMap[decodeURIComponent(parts[1])];
       if (rsp && hasSpeciesRef(rsp)) { renderSpeciesRef(rsp, parts[2], query); return; }
+    } else if (parts[0] === "sh" && parts[1]) {
+      var hsp = speciesMap[decodeURIComponent(parts[1])];
+      if (hsp && hasSpeciesRef(hsp)) { renderSpeciesHist(hsp); return; }
     } else if (parts[0] === "r" && parts[1]) {
       var rr = resolve(parts[1]);
       if (rr && hasRef(rr)) { renderRef(rr, parts[2], query); return; }
