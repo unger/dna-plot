@@ -1,1 +1,1 @@
-window.DNA_REF_BIN=window.DNA_REF_BIN||{};window.DNA_REF_BIN["BOLD:AFT0959"]={"bin":"BOLD:AFT0959","own":[],"seqs":[],"sus":[{"country":"Italy","id":"BCLEP4376-23.COI-5P","reason":"65,7 % från egna namnet, 13,1 % från scabrida.","species":"Coleophora versurella"}]};
+window.DNA_REF_BIN=window.DNA_REF_BIN||{};window.DNA_REF_BIN["BOLD:AFT0959"]={"bin":"BOLD:AFT0959","own":[],"seqs":[],"sus":[{"country":"Italy","id":"BCLEP4376-23.COI-5P","reason":"12,5 % från egna namnet, 10,5 % från limosipennella.","species":"Coleophora versurella"}]};

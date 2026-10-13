@@ -1,6 +1,7 @@
 """Suggest suspicious BOLD records for review: data/bold/suspicious_candidates.tsv.
 
 Usage: python scripts/find_suspicious.py   (reads data/bold/bold.sqlite, changes nothing)
+With --refresh-reasons the stored reason texts of marked records with outdated percentages are rewritten.
 Writes suspicious_candidates.tsv (new candidates) and suspicious_recheck.tsv (the already marked records
 judged again with the current alignment and checks: 'unmark?' where no check supports the mark any more).
 
@@ -24,6 +25,7 @@ import itertools
 import os
 import re
 import sqlite3
+import sys
 
 import numpy as np
 
@@ -147,12 +149,12 @@ def analyse(con, include_marked, quiet=False, marked_as_evidence=True):
         cands[rid].append(("stop_codon", "%d stop codon(s) in the best reading frame" % n))
 
     # --- put every record in its BIN's frame (BOLD does not pad all records), so columns can be compared
-    glob = bb.pick_anchor([r[4] for r in rows], None)
+    glob = bb.global_anchor([r[4] for r in rows])
     if glob is None:
         glob = br.encode(collections.Counter(r[4] for r in rows).most_common(1)[0][0])
 
     def anchor_of(seqs):
-        return bb.pick_anchor(seqs, glob)
+        return bb.pick_anchor(seqs, glob, glob)
     by_bin_rows = collections.defaultdict(list)
     for r in rows:
         by_bin_rows[r[2]].append(r)
@@ -328,6 +330,37 @@ def recheck_marked(con, cands_all, meta_all):
     print(len(marked), "marked records rechecked,", n_unmark, "no longer supported ->", RECHECK)
 
 
+def refresh_reasons(con, cands_all):
+    """Rewrite the stored reason (shown on the pages) of marked records whose name_outlier numbers no longer
+    match the current calculation by more than 1 percentage point, e.g. texts written before the alignment
+    was fixed. Same wording as the hand-written ones: "12,7 % från egna namnet, 10,5 % från limosipennella."
+    Reasons of other kinds are left alone."""
+    n = 0
+    for rid, found in cands_all.items():
+        m = None
+        for check, detail in found:
+            if check == "name_outlier":
+                m = re.match(r"([\d.]+) % from the nearest of its own name; ([\d.]+) % from (?:\w+ )?([^;]+)", detail)
+                break
+        row = con.execute("SELECT suspicious, suspicious_reason FROM records WHERE record_id=?", (rid,)).fetchone()
+        if not m or not row or not row[0]:
+            continue
+        old = re.match(r"\s*([\d,]+) % fr.n egna namnet, ([\d,]+) %", row[1] or "")
+        if not old:
+            continue
+        o1, o2 = (float(x.replace(",", ".")) for x in old.groups())
+        n1, n2 = float(m.group(1)), float(m.group(2))
+        if abs(o1 - n1) <= 1 and abs(o2 - n2) <= 1:
+            continue
+        fmt = lambda v: ("%.1f" % v).replace(".0", "").replace(".", ",")
+        text = "%s %% från egna namnet, %s %% från %s." % (fmt(n1), fmt(n2), m.group(3).strip())
+        con.execute("UPDATE records SET suspicious_reason=? WHERE record_id=?", (text, rid))
+        print(rid, ":", row[1], "->", text)
+        n += 1
+    con.commit()
+    print(n, "reason text(s) refreshed")
+
+
 def main():
     con = sqlite3.connect(br.DB)
     cands, meta = analyse(con, False)
@@ -341,6 +374,8 @@ def main():
         for rid, v in c.items():
             cands_all[rid] += [x for x in v if x not in cands_all[rid]]
     recheck_marked(con, cands_all, meta_all)
+    if "--refresh-reasons" in sys.argv:  # writes to the database
+        refresh_reasons(con, cands_all)
     with open(OUT, "w", encoding="utf8") as f:
         f.write("record_id\tbin\tspecies\tcountry\tchecks\tdetail\n")
         for rid in sorted(cands, key=lambda k: (-len({c for c, _ in cands[k]}), k)):

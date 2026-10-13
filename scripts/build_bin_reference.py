@@ -25,6 +25,7 @@ FRAME = 700  # columns of the alignment frame the consensus sequences cover
 MAX_FRAME_SHIFT = 450  # BOLD does not always pad a record that starts late; look this far for its place
 MIN_FRAME_IDENT = 0.9  # a record this alike the anchor as it stands is in the frame
 MIN_FRAME_COMPARED = 120
+MIN_ANCHOR_IDENT = 0.7  # an anchor must be this alike the global anchor at offset 0 (a late start gives ~0.3)
 BARCODE_LEN = (655, 660)  # a standard 658 bp barcode read starts at the first column of BOLD's frame
 
 
@@ -49,13 +50,25 @@ def frame_identity(q, anchor, k):
     return (float(((a == b) & ok).sum()) / n if n else 0.0), n
 
 
-def pick_anchor(seqs, fallback):
+def pick_anchor(seqs, fallback, frame=None):
     """The commonest full-length (BARCODE_LEN), gap-free sequence of a group as its frame anchor. Longer
-    unpadded reads are no good: they may start before BOLD's frame and would pull the whole group out of it. A group with none (all
-    reads short and unpadded, e.g. a BIN of one such record) would otherwise anchor on itself and never be
-    shifted into BOLD's frame, so the caller's `fallback` (the global anchor) is used then."""
+    unpadded reads are no good: they may start before BOLD's frame and would pull the whole group out of it.
+    Nor is a read of about the right length that still starts a column or two late (BOLD does not pad all
+    of them): with `frame` (the global anchor) a candidate must line up with it as it stands. A group with
+    no such sequence (e.g. a BIN of one short, unpadded record) would otherwise anchor on itself and never
+    be shifted into BOLD's frame, so `fallback` (the global anchor) is used then."""
     full = collections.Counter(x for x in seqs if "-" not in x and BARCODE_LEN[0] <= len(x) <= BARCODE_LEN[1])
-    return br.encode(full.most_common(1)[0][0]) if full else fallback
+    for seq, _ in full.most_common():
+        code = br.encode(seq)
+        if frame is None or frame_identity(code, frame, 0)[0] >= MIN_ANCHOR_IDENT:
+            return code
+    return fallback
+
+
+def global_anchor(seqs):
+    """BOLD's frame: the commonest 658 bp gap-free sequence (a standard barcode read starts at column 0)."""
+    g = pick_anchor([x for x in seqs if len(x) == 658], None)
+    return g if g is not None else pick_anchor(seqs, None)
 
 
 def in_bin_frame(seq, anchor):
@@ -157,7 +170,7 @@ def main():
     R = np.full((len(seqs), br.MAX_LEN), br.PAD, dtype=np.uint8)
     for i, s in enumerate(seqs):
         R[i, :len(s)] = br.encode(s)
-    glob = pick_anchor(seqs, None)  # BOLD's frame, for BINs without a full-length record of their own
+    glob = global_anchor(seqs)  # BOLD's frame, for BINs without a full-length record of their own
 
     overview = {}
     cons = {}
@@ -169,7 +182,7 @@ def main():
         flagged = [{"id": rid, "species": sp or "", "country": co or "", "reason": why or ""}
                    for rid, sp, co, sus, nuc, why in rows if sus]  # listed on the BIN page with the reason
         rows = [r for r in rows if not r[3]]  # suspicious records stay out of everything below
-        anchor = pick_anchor([r[4].upper() for r in rows], glob)
+        anchor = pick_anchor([r[4].upper() for r in rows], glob, glob)
         by_seq = collections.OrderedDict()
         for rid, sp, co, sus, nuc, why in rows:
             nuc = nuc.upper()
