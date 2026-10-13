@@ -1,6 +1,7 @@
 """Reference data per species: ref/sp_<hash>.js (plot data) and ref/species.js (BIN overview).
 
 Usage: python scripts/build_species_reference.py   (after build_reference.py and build_ref_summary.py)
+       python scripts/build_species_reference.py --extra-only   (just refresh the BOLD-only species in ref/species.js)
 
 Per species name in the app:
   * ref/species.js  - how the name is used in BOLD: records, BINs, other names sharing those BINs
@@ -12,6 +13,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import sys
 import collections
 
 import numpy as np
@@ -54,7 +56,25 @@ def bin_overview(con, name):
     return {"named": sum(r[1] for r in rows), "no_bin": sum(n for b, n in rows if b is None), "bins": bins}
 
 
+def extra_overview(con, overview):
+    """Species named in scripts/bin_species.txt that have no own findings: BOLD overview only (no plot file)."""
+    for line in open("scripts/bin_species.txt", encoding="utf8"):
+        name = line.strip()
+        if not name or name.startswith("#") or name in overview:
+            continue
+        ov = bin_overview(con, norm(name))
+        ov["own_bins"] = {}
+        ov["bold_only"] = True
+        overview[name] = ov
+
+
 def main():
+    if "--extra-only" in sys.argv:  # add the BOLD-only species to the existing ref/species.js
+        overview = json.loads(open("ref/species.js", encoding="utf8").read().split("=", 1)[1].rstrip(";"))
+        overview = {k: v for k, v in overview.items() if not v.get("bold_only")}
+        extra_overview(sqlite3.connect(br.DB), overview)
+        br.write_js("ref/species.js", "window.DNA_REF_SPECIES=", overview)
+        return
     own = br.load_own()
     slug = br.make_slug(own)
     summary = json.loads(open("ref/summary.js", encoding="utf8").read().split("=", 1)[1].rstrip(";"))
@@ -138,6 +158,7 @@ def main():
                                             lambda sp, bn: bn in species_bins or norm(sp) == bold_name)
         br.write_js("ref/sp_%s.js" % h, 'window.DNA_REF_SP=window.DNA_REF_SP||{};window.DNA_REF_SP["%s"]=' % h, out)
         print(name, len(variants), "variants,", len(nb), "refs,", int(in_bin[chosen].sum()), "in BINs")
+    extra_overview(con, overview)
     br.write_js("ref/species.js", "window.DNA_REF_SPECIES=", overview)
 
 

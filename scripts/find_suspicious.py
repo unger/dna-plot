@@ -1,6 +1,8 @@
 """Suggest suspicious BOLD records for review: data/bold/suspicious_candidates.tsv.
 
 Usage: python scripts/find_suspicious.py   (reads data/bold/bold.sqlite, changes nothing)
+Writes suspicious_candidates.tsv (new candidates) and suspicious_recheck.tsv (the already marked records
+judged again with the current alignment and checks: 'unmark?' where no check supports the mark any more).
 
 Checks (COI-5P records not already marked suspicious):
   bin_outlier   a record far from every other record in its BIN (> BIN_OUTLIER %), after repairing a
@@ -29,6 +31,7 @@ import build_bin_reference as bb
 import build_reference as br
 
 BIN_OUTLIER = 3.0   # % to the nearest other record in the BIN
+MISSPELL_MIN = 3     # a name must have this many records to be what another name is a misspelling of
 NAME_MARGIN = 1.5   # % the nearest other-species record must be closer than the nearest same-species one
 MAJORITY_SHARE = 0.6    # a BIN's majority name is at least this share of its named records
 MINORITY_SHARE = 0.2    # bin_minority_name: the record's name is at most this share
@@ -36,6 +39,7 @@ SWAP_SHARE = 0.5        # name_swap: looser, for small BINs (e.g. 1 of 3)
 ESTABLISHED = 3         # name_outlier: a name with this many records in a BIN, at least half of its named ones, is not a slip
 MIN_COMPARED = 400
 OUT = "data/bold/suspicious_candidates.tsv"
+RECHECK = "data/bold/suspicious_recheck.tsv"  # the marked records, judged again
 SYNONYMS = "scripts/name_synonyms.tsv"  # old name <TAB> accepted name; compared as the accepted name
 STOPS = {"TAA", "TAG"}  # TGA codes for Trp in invertebrate mitochondria
 
@@ -89,6 +93,20 @@ def name_fixes(rows):
         for a, b in itertools.permutations(sorted(names), 2):
             if a not in fixes and count[a] * 3 <= count[b] and edit_distance(a, b) <= 2:
                 fixes[a] = (b, "misspelling")
+    # A misspelled name often sits in a BIN of another species (that is the interesting case), so it is
+    # also matched against every name, not just those of its own BIN: 1 letter from a name with at least
+    # MISSPELL_MIN records, and no other name that close.
+    names = [n for n in count if n not in fixes]
+    for a in names:
+        close = [b for b in count if b != a and abs(len(a) - len(b)) <= 1 and edit_distance(a, b) <= 1]
+        if len(close) == 1 and count[close[0]] >= MISSPELL_MIN and count[a] * 3 <= count[close[0]]:
+            fixes[a] = (close[0], "misspelling")
+    # follow chains (a misspelling of a synonym)
+    for a in list(fixes):
+        seen = {a}
+        while fixes[a][0] in fixes and fixes[a][0] not in seen:
+            seen.add(fixes[a][0])
+            fixes[a] = (fixes[fixes[a][0]][0], fixes[a][1])
     return fixes
 
 
@@ -103,16 +121,23 @@ def stop_candidates(rows):
     return out
 
 
-def main():
-    con = sqlite3.connect(br.DB)
+def analyse(con, include_marked, quiet=False, marked_as_evidence=True):
+    """Run all checks. include_marked=False: only records not marked suspicious (the review list).
+    include_marked=True: the marked ones are judged too, as if they were new records, but they never count
+    as evidence for others or in a BIN's shares (see recheck_marked), unless marked_as_evidence is set: then
+    they are ordinary records. Returns (candidates, meta)."""
+    marked = set()
+    if include_marked and not marked_as_evidence:
+        marked = {r[0] for r in con.execute("SELECT record_id FROM records WHERE suspicious=1")}
     rows = con.execute(
         """SELECT r.record_id, r.species, r.bin_uri, r.country, s.nuc FROM records r
            JOIN sequences s USING(record_id)
-           WHERE r.marker_code='COI-5P' AND s.nuc IS NOT NULL AND r.suspicious=0""").fetchall()
+           WHERE r.marker_code='COI-5P' AND s.nuc IS NOT NULL""" + ("" if include_marked else " AND r.suspicious=0")).fetchall()
     rows = [(rid, sp or "", b or "", co or "", nuc.upper()) for rid, sp, b, co, nuc in rows if len(nuc) <= br.MAX_LEN]
     fixes = name_fixes(rows)
     for old, (new, why) in sorted(fixes.items()):
-        print("%s -> %s (%s, %d record(s))" % (old, new, why, sum(1 for r in rows if r[1] == old)))
+        if not quiet:
+            print("%s -> %s (%s, %d record(s))" % (old, new, why, sum(1 for r in rows if r[1] == old)))
     rows = [(rid, fixes.get(sp, (sp,))[0], b, co, nuc) for rid, sp, b, co, nuc in rows]
     cands = collections.defaultdict(list)  # record_id -> [(check, detail)]
     meta = {r[0]: r for r in rows}
@@ -122,13 +147,15 @@ def main():
         cands[rid].append(("stop_codon", "%d stop codon(s) in the best reading frame" % n))
 
     # --- put every record in its BIN's frame (BOLD does not pad all records), so columns can be compared
+    glob = bb.pick_anchor([r[4] for r in rows], None)
+    if glob is None:
+        glob = br.encode(collections.Counter(r[4] for r in rows).most_common(1)[0][0])
+
     def anchor_of(seqs):
-        c = collections.Counter(x for x in seqs if "-" not in x and len(x) >= 640) or collections.Counter(seqs)
-        return br.encode(c.most_common(1)[0][0])
+        return bb.pick_anchor(seqs, glob)
     by_bin_rows = collections.defaultdict(list)
     for r in rows:
         by_bin_rows[r[2]].append(r)
-    glob = anchor_of([r[4] for r in rows])
     anchors = {b: anchor_of([r[4] for r in rs]) if b else glob for b, rs in by_bin_rows.items()}
     rows = [(rid, sp, b, co, bb.in_bin_frame(nuc, anchors[b])) for rid, sp, b, co, nuc in rows]
 
@@ -143,19 +170,24 @@ def main():
         recs_of[idx[r[4]]].append(r)
     # only proper species names count ("Genus species"); "sp.", "group", codes and the like are placeholders
     names_of = [{r[1] for r in recs_of[i] if proper_name(r[1])} for i in range(len(useqs))]
+    ref_names_of = [{r[1] for r in recs_of[i] if proper_name(r[1]) and r[0] not in marked} for i in range(len(useqs))]
 
     # --- BIN outliers: nearest other record in the same BIN
     by_bin = collections.defaultdict(set)
+    ref_by_bin = collections.defaultdict(set)
     for r in rows:
         if r[2]:
             by_bin[r[2]].add(idx[r[4]])
+            if r[0] not in marked:
+                ref_by_bin[r[2]].add(idx[r[4]])
     for b, members in by_bin.items():
         members = sorted(members)
-        if len(members) < 4:
+        ref_members = sorted(ref_by_bin[b])
+        if len(ref_members) < 4:
             continue
         for i in members:
-            d = pdist(R[i], R[[j for j in members if j != i]])
-            others = [j for j in members if j != i]
+            others = [j for j in ref_members if j != i]
+            d = pdist(R[i], R[others])
             order = np.argsort(np.where(np.isnan(d), 1e9, d))[:5]
             best = np.nanmin(d) if not np.all(np.isnan(d)) else np.nan
             if np.isnan(best) or best <= BIN_OUTLIER:
@@ -163,11 +195,11 @@ def main():
             best = min(repaired_dist(R[i], R[others[k]]) if not np.isnan(d[k]) else 1e9 for k in order)
             if best > BIN_OUTLIER:
                 for r in recs_of[i]:
-                    cands[r[0]].append(("bin_outlier", "%.1f %% from the nearest of %d others in %s" % (best, len(members) - 1, b)))
+                    cands[r[0]].append(("bin_outlier", "%.1f %% from the nearest of %d others in %s" % (best, len(others), b)))
 
     # --- name outliers: nearest same-species vs nearest other-species record
-    n_name_bin = collections.Counter((r[2], r[1]) for r in rows if r[2] and proper_name(r[1]))
-    n_bin = collections.Counter(r[2] for r in rows if r[2] and proper_name(r[1]))
+    n_name_bin = collections.Counter((r[2], r[1]) for r in rows if r[2] and proper_name(r[1]) and r[0] not in marked)
+    n_bin = collections.Counter(r[2] for r in rows if r[2] and proper_name(r[1]) and r[0] not in marked)
 
     def established(r):
         """Several records with the same name in the BIN, at least half of its named records: more than a slip,
@@ -175,10 +207,10 @@ def main():
         return n_name_bin[r[2], r[1]] >= ESTABLISHED and 2 * n_name_bin[r[2], r[1]] >= n_bin[r[2]]
 
     mask = collections.defaultdict(lambda: np.zeros(len(useqs), dtype=bool))
-    for j, nm in enumerate(names_of):
+    for j, nm in enumerate(ref_names_of):
         for n in nm:
             mask[n][j] = True
-    named = np.array([bool(nm) for nm in names_of])
+    named = np.array([bool(nm) for nm in ref_names_of])
     for start in range(0, len(useqs), 1):
         for i in range(start, start + 1):
             if not names_of[i]:
@@ -205,7 +237,7 @@ def main():
             ro = np.inf if np.isnan(ro) else ro
             # a name without any other record is no evidence (synonym, or a species COI cannot tell apart)
             if np.isfinite(rs) and rs - ro >= NAME_MARGIN:
-                near = ", ".join(sorted(names_of[jo[int(np.nanargmin([repaired_dist(R[i], R[j]) for j in jo]))]]))
+                near = ", ".join(sorted(ref_names_of[jo[int(np.nanargmin([repaired_dist(R[i], R[j]) for j in jo]))]]))
                 own = "%.1f %% from the nearest of its own name" % rs
                 for r in recs_of[i]:
                     if established(r):
@@ -215,11 +247,15 @@ def main():
     # sequence, so a sequence shared by several species does not hide a record's own name.
     seqs_of = collections.defaultdict(lambda: collections.defaultdict(set))  # name -> bin -> unique sequences
     named_in = collections.defaultdict(list)  # bin -> records with a proper name
+    ref_named_in = collections.defaultdict(list)  # the same without the marked records
     for r in rows:
         if proper_name(r[1]):
-            seqs_of[r[1]][r[2]].add(idx[r[4]])
+            if r[0] not in marked:
+                seqs_of[r[1]][r[2]].add(idx[r[4]])
             if r[2]:
                 named_in[r[2]].append(r)
+                if r[0] not in marked:
+                    ref_named_in[r[2]].append(r)
     near_cache = {}
 
     def nearest(i, js, key):
@@ -238,22 +274,26 @@ def main():
         return near_cache[i, key]
 
     dissent = []  # (record, own name, majority name, bin, majority count, named count, own count, dM, dX)
-    for b, mem in named_in.items():
+    for b, mem_all in named_in.items():
+        mem = ref_named_in[b]  # shares are counted over the unmarked records
+        if not mem:
+            continue
         cnt = collections.Counter(r[1] for r in mem)
         top = cnt.most_common(2)
         M, mc = top[0]
         if len(mem) < 3 or (len(top) > 1 and top[1][1] == mc) or mc / len(mem) < MAJORITY_SHARE:
             continue
-        for r in mem:
+        for r in mem_all:
             X = r[1]
-            if X == M or cnt[X] >= mc or cnt[X] / len(mem) > SWAP_SHARE:
+            mine = 1 if r[0] in marked else 0  # a marked record is not in the counts yet
+            if X == M or cnt[X] >= mc or (cnt[X] + mine) / (len(mem) + mine) > SWAP_SHARE:
                 continue
             i = idx[r[4]]
             elsewhere = set().union(*[v for k, v in seqs_of[X].items() if k != b])
             dM = nearest(i, seqs_of[M][b], ("in", M, b))
             dX = nearest(i, elsewhere, ("out", X, b))
             if dM <= BIN_OUTLIER and np.isfinite(dX) and dX - dM >= NAME_MARGIN:
-                dissent.append((r, X, M, b, mc, len(mem), cnt[X], dM, dX))
+                dissent.append((r, X, M, b, mc, len(mem) + mine, cnt[X] + mine, dM, dX))
     by_names = collections.defaultdict(list)
     for t in dissent:
         by_names[t[1], t[2]].append(t)
@@ -264,6 +304,43 @@ def main():
         if nx / n <= MINORITY_SHARE:
             cands[r[0]].append(("bin_minority_name", "%s is %d of %d named in %s (mostly %s); %.1f %% from %s, %s" % (
                 X, nx, n, b, M, dM, M, "%.1f %% from its own name elsewhere" % dX)))
+    return cands, meta
+
+
+def recheck_marked(con, cands_all, meta_all):
+    """Records marked suspicious, judged again by the current checks (the marked ones included in the
+    reference, so they can support each other). A mark that no check supports any more is probably a
+    leftover from an older, worse alignment: listed in RECHECK as 'unmark?'. Marks still supported are
+    'keep'. The checks cannot judge records with few relatives, those come out as unmark? too, so read
+    the detail before unmarking."""
+    marked = con.execute("""SELECT r.record_id, r.species, r.bin_uri, r.country, r.suspicious_reason
+                            FROM records r JOIN sequences s USING(record_id)
+                            WHERE r.suspicious=1 AND r.marker_code='COI-5P' AND s.nuc IS NOT NULL""").fetchall()
+    n_unmark = 0
+    with open(RECHECK, "w", encoding="utf8") as f:
+        f.write("record_id\tbin\tspecies\tcountry\tverdict\tchecks now\tdetail now\tmarked because\n")
+        for rid, sp, b, co, why in sorted(marked, key=lambda m: m[0]):
+            c = cands_all.get(rid, [])
+            verdict = "keep" if c else "unmark?"
+            n_unmark += not c
+            f.write("\t".join([rid, b or "", sp or "", co or "", verdict, ",".join(sorted({x for x, _ in c})),
+                               "; ".join(d for _, d in c), (why or "").replace("\t", " ")]) + "\n")
+    print(len(marked), "marked records rechecked,", n_unmark, "no longer supported ->", RECHECK)
+
+
+def main():
+    con = sqlite3.connect(br.DB)
+    cands, meta = analyse(con, False)
+    # A mark counts as supported if either view backs it: judged against the unmarked records only (a bad
+    # record cannot excuse itself), or with the marked ones as ordinary records (a name whose records are all
+    # marked has no unmarked relatives to compare with).
+    cands_strict, meta_all = analyse(con, True, quiet=True, marked_as_evidence=False)
+    cands_lenient, _ = analyse(con, True, quiet=True, marked_as_evidence=True)
+    cands_all = collections.defaultdict(list)
+    for c in (cands_strict, cands_lenient):
+        for rid, v in c.items():
+            cands_all[rid] += [x for x in v if x not in cands_all[rid]]
+    recheck_marked(con, cands_all, meta_all)
     with open(OUT, "w", encoding="utf8") as f:
         f.write("record_id\tbin\tspecies\tcountry\tchecks\tdetail\n")
         for rid in sorted(cands, key=lambda k: (-len({c for c, _ in cands[k]}), k)):

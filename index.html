@@ -39,6 +39,14 @@
   }
   #filter:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .tabs { display: flex; gap: 4px; margin: 0 0 10px; }
+  .tabs a {
+    padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); text-decoration: none; font-size: 14px; background: var(--panel);
+  }
+  .tabs a:hover { border-color: var(--accent); }
+  .tabs a.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .li-meta .bold-only { display: block; font-size: 12px; }
 
   main { max-width: 900px; margin: 0 auto; padding: 16px 20px 60px; }
 
@@ -314,8 +322,9 @@
 <body>
 <header>
   <h1>Coleophora <span class="count" id="count"></span></h1>
+  <nav class="tabs"><a href="#/" id="tab-species">Artlista</a><a href="#/b" id="tab-bin">BIN-referens</a></nav>
   <input id="filter" type="search" placeholder="Filtrera – mellanslagsseparerade ord…" autocomplete="off">
-  <div class="hint">Söker i artnamn, vetenskapligt namn, lokalnamn, provins och samlingsnummer. Alla ord måste matcha. <a href="#/b">BIN-referens →</a></div>
+  <div class="hint" id="filter-hint">Söker i artnamn, vetenskapligt namn, lokalnamn, provins och samlingsnummer. Alla ord måste matcha.</div>
 </header>
 <main id="view"></main>
 <footer class="source">
@@ -401,6 +410,15 @@
     sp.members.push(r);
   });
 
+  // Species from the species list (scripts/bin_species.txt) without own individuals: only BOLD data.
+  var boldOnlyList = [], boldOnlyMap = {};
+  Object.keys(window.DNA_REF_SPECIES || {}).forEach(function (name) {
+    if (!window.DNA_REF_SPECIES[name].bold_only || speciesByName[name]) return;
+    var sp = { name: name, slug: name.replace(/\s+/g, "_"), members: [], boldOnly: true };
+    boldOnlyMap[sp.slug] = sp;
+    boldOnlyList.push(sp);
+  });
+
   var view = document.getElementById("view");
   var filterEl = document.getElementById("filter");
   var countEl = document.getElementById("count");
@@ -481,7 +499,12 @@
     var list = currentMatches();
     var matched = {};
     list.forEach(function (r) { (matched[r.__species] = matched[r.__species] || []).push(r); });
-    var shown = sortSpecies(speciesList.filter(function (sp) { return matched[sp.name]; }), matched);
+    var words = filterEl.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    var boldShown = boldOnlyList.filter(function (sp) {
+      return words.every(function (w) { return sp.name.toLowerCase().indexOf(w) !== -1; });
+    });
+    boldShown.forEach(function (sp) { matched[sp.name] = []; });
+    var shown = sortSpecies(speciesList.filter(function (sp) { return matched[sp.name]; }).concat(boldShown), matched);
     countEl.textContent =
       "(" + shown.length + (shown.length === 1 ? " art" : " arter") +
       " · " + list.length + (list.length === 1 ? " individ)" : " individer)");
@@ -497,6 +520,16 @@
       var n = matched[sp.name].length, total = sp.members.length;
       var common = commonName(sp);
       var li = document.createElement("li");
+      if (sp.boldOnly) {
+        var bi = window.DNA_REF_SPECIES[sp.name];
+        li.innerHTML =
+          '<span class="li-main"><span class="sci">' + esc(sp.name) + '</span><span class="common">Inga egna individer</span></span>' +
+          '<span class="li-meta"><strong>0</strong> individer<span class="bold-only">BOLD: ' + bi.named +
+            " poster · " + bi.bins.length + (bi.bins.length === 1 ? " BIN" : " BIN:ar") + "</span></span>";
+        li.addEventListener("click", function () { setHash("/s/" + encodeURIComponent(sp.slug)); });
+        ul.appendChild(li);
+        return;
+      }
       li.innerHTML =
         '<span class="li-main">' +
           '<span class="sci">' + esc(sp.name) + '</span>' +
@@ -3075,6 +3108,7 @@
   }
 
   // No BIN chosen yet: pick one or several among the BINs the own findings (and own names) fall in.
+  var binFilter = null; // set while the BIN list is shown: applies the header filter to it
   function renderBinPicker() {
     var info = binInfo();
     var all = Object.keys(info).sort(function (a, b) { return info[b].own - info[a].own || info[b].n - info[a].n; });
@@ -3085,14 +3119,8 @@
       { key: "maxd", label: "Största avstånd", val: function (i) { return i.maxd === null || i.maxd === undefined ? null : i.maxd; } }
     ];
     var binSort = { key: "own", dir: -1 }; // all sort largest first on the first click; a second click flips it
-    view.innerHTML = '<a class="back" href="#/">&larr; Till artlistan</a>' +
-      '<div class="card"><h2>BIN-referens</h2>' +
-      '<div class="subtitle">Välj en eller flera BOLD-BIN:ar (högst ' + BIN_MAX + '). Sidan visar bara de BIN:arnas sekvenser, ' +
-        "varje BIN i egen färg, och dina egna fynd som svarta romber.</div>" +
-      '<div class="bin-pick"><input id="bin-filter" type="search" placeholder="Filtrera på BIN eller artnamn…" size="30" autocomplete="off">' +
-        '<button class="sort-btn" id="bin-go" disabled>Visa valda</button></div>' +
-      '<div class="sort-bar" id="bin-sort"></div>' +
-      '<ul class="list species-rows refbox" id="bin-list">' + all.map(function (b) {
+    view.innerHTML = '<div class="sort-bar" id="bin-sort"></div>' +
+      '<ul class="list" id="bin-list">' + all.map(function (b) {
         var i = info[b];
         return '<li data-t="' + esc((b + " " + (i.names || Object.keys(i.species)).join(" ")).toLowerCase()) + '">' +
           '<span class="li-main"><span class="sn"><input type="checkbox" value="' + esc(b) + '" title="Välj flera"> <a href="' + binHash([b]) + '">' + esc(b) + "</a> · " + i.n +
@@ -3102,7 +3130,7 @@
             (i.maxnn > 30 ? ' class="warn"' : "") + ">närmaste granne max " + refPct(i.maxnn / 10) + "</span>") +
           (i.maxd === null || i.maxd === undefined ? "" : '<br><span title="Största avståndet mellan två sekvenser i BIN:en"' +
             (i.maxd > 30 ? ' class="warn"' : "") + ">största avstånd " + refPct(i.maxd / 10) + "</span>") + "</span></li>";
-      }).join("") + "</ul></div>";
+      }).join("") + "</ul>";
     var rows = {};
     Array.prototype.forEach.call(view.querySelectorAll("#bin-list li"), function (li) { rows[li.querySelector("input").value] = li; });
     function sortBins() {
@@ -3116,7 +3144,10 @@
       document.getElementById("bin-sort").innerHTML = '<span class="lbl">Sortera:</span>' + BIN_SORTS.map(function (s) {
         var on = s.key === binSort.key;
         return '<button class="sort-btn' + (on ? " on" : "") + '" data-sort="' + s.key + '">' + s.label + (on ? (binSort.dir === 1 ? " ↑" : " ↓") : "") + "</button>";
-      }).join("");
+      }).join("") + '<button class="sort-btn" id="bin-go" disabled style="margin-left:auto">Visa valda</button>';
+      go = document.getElementById("bin-go");
+      go.addEventListener("click", function () { setHash(binHash(chosen()).slice(1)); });
+      sync();
       Array.prototype.forEach.call(document.querySelectorAll("#bin-sort [data-sort]"), function (btn) {
         btn.addEventListener("click", function () {
           var k = btn.getAttribute("data-sort");
@@ -3125,8 +3156,7 @@
         });
       });
     }
-    sortBins();
-    var boxes = Array.prototype.slice.call(view.querySelectorAll("#bin-list input")), go = document.getElementById("bin-go");
+    var boxes = Array.prototype.slice.call(view.querySelectorAll("#bin-list input")), go;
     function chosen() { return boxes.filter(function (c) { return c.checked; }).map(function (c) { return c.value; }); }
     function sync() {
       var n = chosen().length;
@@ -3135,14 +3165,21 @@
       boxes.forEach(function (c) { c.disabled = !c.checked && n >= BIN_MAX; });
     }
     boxes.forEach(function (c) { c.addEventListener("change", sync); });
-    go.addEventListener("click", function () { setHash(binHash(chosen()).slice(1)); });
-    document.getElementById("bin-filter").addEventListener("input", function () {
-      var words = this.value.toLowerCase().split(/\s+/).filter(Boolean);
+    Array.prototype.forEach.call(view.querySelectorAll("#bin-list li"), function (li) {
+      li.addEventListener("click", function (e) {
+        if (e.target.closest("a, input")) return;
+        setHash(binHash([li.querySelector("input").value]).slice(1));
+      });
+    });
+    sortBins();
+    binFilter = function () {
+      var words = filterEl.value.toLowerCase().split(/\s+/).filter(Boolean);
       Array.prototype.forEach.call(view.querySelectorAll("#bin-list li"), function (li) {
         var t = li.getAttribute("data-t");
         li.style.display = words.every(function (w) { return t.indexOf(w) !== -1; }) ? "" : "none";
       });
-    });
+    };
+    binFilter();
     window.scrollTo(0, 0);
   }
 
@@ -3303,6 +3340,16 @@
     }).join("") + "</ul>";
   }
 
+  // Species page for a species without own individuals: what BOLD has under the name.
+  function renderBoldSpecies(sp) {
+    countEl.textContent = "";
+    var info = window.DNA_REF_SPECIES[sp.name];
+    view.innerHTML = '<a class="back" href="#/">&larr; Till artlistan</a>' +
+      '<div class="card"><h2><i>' + esc(sp.name) + '</i></h2>' +
+      '<div class="subtitle">Inga egna individer – bara data från BOLD.</div>' + speciesRefHtml(sp) + "</div>";
+    window.scrollTo(0, 0);
+  }
+
   // --- Hash-based routing (GitHub Pages friendly; survives reload & deep links) ---
   //   #/            → species list
   //   #/s/<art>     → species (individuals + COI scatter plot + nearest species)
@@ -3341,10 +3388,20 @@
     return slugMap[slug] || snFirst[slug] || null;
   }
 
+  var wasBinTab = false;
   function route() {
     var hash = location.hash.replace(/^#/, ""), qi = hash.indexOf("?");
     var query = qi === -1 ? "" : hash.slice(qi + 1);
     var parts = (qi === -1 ? hash : hash.slice(0, qi)).split("/").filter(Boolean);
+    var binTab = parts[0] === "b" || parts[0] === "h";
+    document.getElementById("tab-bin").className = binTab ? "on" : "";
+    document.getElementById("tab-species").className = binTab ? "" : "on";
+    if (binTab !== wasBinTab) { filterEl.value = ""; wasBinTab = binTab; }
+    filterEl.placeholder = binTab ? "Filtrera på BIN eller artnamn…" : "Filtrera – mellanslagsseparerade ord…";
+    document.getElementById("filter-hint").textContent = binTab
+      ? "Välj en eller flera BIN:ar (högst " + BIN_MAX + ") och tryck Visa valda, eller klicka på en rad. Sidan visar bara de BIN:arnas sekvenser, varje BIN i egen färg, och dina egna fynd som svarta romber."
+      : "Söker i artnamn, vetenskapligt namn, lokalnamn, provins och samlingsnummer. Alla ord måste matcha.";
+    binFilter = null;
     if (parts[0] === "s" && parts[1]) {
       var sp = speciesMap[decodeURIComponent(parts[1])];
       var others = [];
@@ -3353,6 +3410,7 @@
         if (o && o !== sp && others.indexOf(o) === -1) others.push(o);
       });
       if (sp) { renderSpecies(sp, others); return; }
+      if (boldOnlyMap[decodeURIComponent(parts[1])]) { renderBoldSpecies(boldOnlyMap[decodeURIComponent(parts[1])]); return; }
     } else if (parts[0] === "t" && parts[1]) {
       var base = speciesMap[decodeURIComponent(parts[1])];
       var cnt = TREE_COUNTS.indexOf(+parts[2]) !== -1 ? +parts[2] : TREE_DEFAULT;
@@ -3400,6 +3458,7 @@
 
   // Typing in the filter always returns to (and re-renders) the list.
   filterEl.addEventListener("input", function () {
+    if (binFilter) { binFilter(); return; }
     if (location.hash !== "#/") location.hash = "#/"; else renderList();
   });
 

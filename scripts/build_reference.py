@@ -181,7 +181,9 @@ def repair_indels(row, ref, fill=None, rounds=2):
             break
         p, d = hit
         rev = apply_indel(rev, p, d, fill) if is_str else _apply_codes(rev, p, d)
-    return rev[::-1] + rest if is_str or len(rest) == 0 else np.concatenate([rev[::-1], rest])
+    if is_str:
+        return rev[::-1] + rest
+    return rev[::-1] if len(rest) == 0 else np.concatenate([rev[::-1], rest])
 
 
 def _apply_codes(row, p, d):

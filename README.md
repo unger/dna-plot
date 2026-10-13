@@ -52,6 +52,11 @@ species in it. Your findings are placed in the BIN of their nearest BOLD sequenc
 python scripts/build_bin_reference.py   # after build_ref_summary.py and build_species_reference.py
 ```
 
+The start page has two tabs, the species list (`#/`) and the BIN reference (`#/b`). The species list
+shows your own species plus every species named in `scripts/bin_species.txt`; the latter have a page with
+BOLD data only. After editing `bin_species.txt`, refresh them with
+`python scripts/build_species_reference.py --extra-only` and then `build_bin_reference.py`.
+
 ## Data source
 
 Reference sequences, species names and BIN assignments come from BOLD Systems
