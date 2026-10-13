@@ -170,7 +170,18 @@ def repair_indels(row, ref, fill=None, rounds=2):
             break
         p, d = hit
         row = apply_indel(row, p, d, fill) if is_str else _apply_codes(row, p, d)
-    return row
+    # An indel near the start leaves the head shifted instead of the tail (the frame was fitted to the
+    # longer tail): the same repair from the other end, on the reversed sequences.
+    L = min(len(row), len(ref))
+    head, rest = row[:L], row[L:]
+    rev = head[::-1]
+    for _ in range(rounds):
+        hit = find_indel(encode(rev) if is_str else rev, ref[:L][::-1])
+        if hit is None:
+            break
+        p, d = hit
+        rev = apply_indel(rev, p, d, fill) if is_str else _apply_codes(rev, p, d)
+    return rev[::-1] + rest if is_str or len(rest) == 0 else np.concatenate([rev[::-1], rest])
 
 
 def _apply_codes(row, p, d):

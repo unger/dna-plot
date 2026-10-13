@@ -81,6 +81,34 @@ def consensus(by_seq):
     return np.where(counts.sum(axis=1) > 0, counts.argmax(axis=1), 4).astype(np.uint8)
 
 
+def bin_distances(by_seq):
+    """(largest distance between two sequences, largest distance from a sequence to its nearest neighbour),
+    in tenths of a percent, over the BIN's BOLD records (suspicious ones left out). BOLD's BIN page shows the
+    latter: a BIN is a chain of near neighbours, so two members can be far apart without anyone being isolated.
+    A sequence shared by several records has a neighbour at 0. None when fewer than two sequences overlap enough."""
+    if len(by_seq) < 2:
+        return None, None
+    M = np.full((len(by_seq), FRAME), 4, dtype=np.uint8)
+    for i, seq in enumerate(by_seq):
+        codes = br.encode(seq)[:FRAME]
+        M[i, :len(codes)] = codes
+    shared = [len(g["ids"]) > 1 for g in by_seq.values()]
+    pair_max, nn_max = None, None
+    for i in range(len(M)):
+        ok = (M[i] < 4) & (M < 4)
+        compared = ok.sum(axis=1)
+        diff = ((M[i] != M) & ok).sum(axis=1)
+        good = (compared >= br.MIN_COMPARED // 2) & (np.arange(len(M)) != i)
+        if not good.any():
+            continue
+        d = diff[good] / compared[good]
+        top = int(np.round(1000 * d.max()))
+        pair_max = top if pair_max is None else max(pair_max, top)
+        nn = 0 if shared[i] else int(np.round(1000 * d.min()))
+        nn_max = nn if nn_max is None else max(nn_max, nn)
+    return pair_max, nn_max
+
+
 def nearest_bins(cons):
     """For each BIN the NEAR closest others as [bin, tenths of a percent] between consensus sequences."""
     names = list(cons)
@@ -155,10 +183,12 @@ def main():
         sp_total = collections.Counter()
         for g in by_seq.values():
             sp_total.update(g["species"])
+        dists = bin_distances(by_seq)
         overview[b] = {"file": key, "n": len(rows), "variants": len(out_seqs),
                        "species": br.unnamed(collections.Counter(dict(sp_total.most_common(TOP)))),
                        "n_species": len(sp_total),
-                       "names": [k for k, _ in sp_total.most_common() if k], "own": sum(len(v) for v in own_by_bin.get(b, {}).values())}
+                       "names": [k for k, _ in sp_total.most_common() if k], "own": sum(len(v) for v in own_by_bin.get(b, {}).values()),
+                       "maxd": dists[0], "maxnn": dists[1]}
         print(b, len(rows), "records,", len(out_seqs), "sequences,", overview[b]["own"], "own")
     for b, near in nearest_bins(cons).items():
         overview[b]["near"] = near

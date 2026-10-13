@@ -69,6 +69,7 @@
   }
   .sort-btn:hover { border-color: var(--accent); }
   .sort-btn.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .li-meta .warn { color: #c0392b; font-weight: 600; }
   .species-link { color: var(--accent); }
 
   /* Species page */
@@ -3077,19 +3078,54 @@
   function renderBinPicker() {
     var info = binInfo();
     var all = Object.keys(info).sort(function (a, b) { return info[b].own - info[a].own || info[b].n - info[a].n; });
+    var BIN_SORTS = [
+      { key: "own", label: "Egna fynd", val: function (i) { return i.own; } },
+      { key: "n", label: "Antal poster", val: function (i) { return i.n; } },
+      { key: "maxnn", label: "Närmaste granne (max)", val: function (i) { return i.maxnn === null || i.maxnn === undefined ? null : i.maxnn; } },
+      { key: "maxd", label: "Största avstånd", val: function (i) { return i.maxd === null || i.maxd === undefined ? null : i.maxd; } }
+    ];
+    var binSort = { key: "own", dir: -1 }; // all sort largest first on the first click; a second click flips it
     view.innerHTML = '<a class="back" href="#/">&larr; Till artlistan</a>' +
       '<div class="card"><h2>BIN-referens</h2>' +
       '<div class="subtitle">Välj en eller flera BOLD-BIN:ar (högst ' + BIN_MAX + '). Sidan visar bara de BIN:arnas sekvenser, ' +
         "varje BIN i egen färg, och dina egna fynd som svarta romber.</div>" +
       '<div class="bin-pick"><input id="bin-filter" type="search" placeholder="Filtrera på BIN eller artnamn…" size="30" autocomplete="off">' +
         '<button class="sort-btn" id="bin-go" disabled>Visa valda</button></div>' +
+      '<div class="sort-bar" id="bin-sort"></div>' +
       '<ul class="list species-rows refbox" id="bin-list">' + all.map(function (b) {
         var i = info[b];
         return '<li data-t="' + esc((b + " " + (i.names || Object.keys(i.species)).join(" ")).toLowerCase()) + '">' +
           '<span class="li-main"><span class="sn"><input type="checkbox" value="' + esc(b) + '" title="Välj flera"> <a href="' + binHash([b]) + '">' + esc(b) + "</a> · " + i.n +
           (i.n === 1 ? " post" : " poster") + '</span><span class="common">' + binSpeciesText(i.species, 3, i.n_species) + "</span></span>" +
-          '<span class="li-meta"><strong>' + i.own + "</strong> " + (i.own === 1 ? "eget fynd" : "egna fynd") + "</span></li>";
+          '<span class="li-meta"><strong>' + i.own + "</strong> " + (i.own === 1 ? "eget fynd" : "egna fynd") +
+          (i.maxnn === null || i.maxnn === undefined ? "" : '<br><span title="Det största avståndet från en sekvens till sin närmaste granne i BIN:en (så BOLD visar det)"' +
+            (i.maxnn > 30 ? ' class="warn"' : "") + ">närmaste granne max " + refPct(i.maxnn / 10) + "</span>") +
+          (i.maxd === null || i.maxd === undefined ? "" : '<br><span title="Största avståndet mellan två sekvenser i BIN:en"' +
+            (i.maxd > 30 ? ' class="warn"' : "") + ">största avstånd " + refPct(i.maxd / 10) + "</span>") + "</span></li>";
       }).join("") + "</ul></div>";
+    var rows = {};
+    Array.prototype.forEach.call(view.querySelectorAll("#bin-list li"), function (li) { rows[li.querySelector("input").value] = li; });
+    function sortBins() {
+      var def = BIN_SORTS.filter(function (s) { return s.key === binSort.key; })[0], ul = document.getElementById("bin-list");
+      all.slice().sort(function (a, b) {
+        var va = def.val(info[a]), vb = def.val(info[b]);
+        if (va === null || vb === null) { if (va !== vb) return va === null ? 1 : -1; }
+        else if (va !== vb) return (va - vb) * binSort.dir;
+        return info[b].own - info[a].own || info[b].n - info[a].n || a.localeCompare(b);
+      }).forEach(function (b) { ul.appendChild(rows[b]); });
+      document.getElementById("bin-sort").innerHTML = '<span class="lbl">Sortera:</span>' + BIN_SORTS.map(function (s) {
+        var on = s.key === binSort.key;
+        return '<button class="sort-btn' + (on ? " on" : "") + '" data-sort="' + s.key + '">' + s.label + (on ? (binSort.dir === 1 ? " ↑" : " ↓") : "") + "</button>";
+      }).join("");
+      Array.prototype.forEach.call(document.querySelectorAll("#bin-sort [data-sort]"), function (btn) {
+        btn.addEventListener("click", function () {
+          var k = btn.getAttribute("data-sort");
+          binSort = k === binSort.key ? { key: k, dir: -binSort.dir } : { key: k, dir: -1 };
+          sortBins();
+        });
+      });
+    }
+    sortBins();
     var boxes = Array.prototype.slice.call(view.querySelectorAll("#bin-list input")), go = document.getElementById("bin-go");
     function chosen() { return boxes.filter(function (c) { return c.checked; }).map(function (c) { return c.value; }); }
     function sync() {
@@ -3202,8 +3238,7 @@
 
     var plotBins = info ? speciesPlotBins(info) : [];
     html += '<div class="seq-header"><h3>BOLD:s BIN:ar för arten</h3>' +
-      (info && info.named && hasSpeciesRef(sp) ? '<a class="tree-link" href="' + speciesHistHash(sp) + '">COI-fördelning för namnet →</a> · ' : "") +
-      (plotBins.length ? '<a class="tree-link" href="' + binHistHash(plotBins.slice(0, BIN_MAX)) + '">COI-fördelning →</a> · <a class="tree-link" href="' + binHash(plotBins.slice(0, BIN_MAX)) + '">Plotta artens BIN:ar →</a>' : "") + "</div>";
+      (plotBins.length ? '<a class="tree-link" href="' + binHash(plotBins.slice(0, BIN_MAX)) + '">Plotta artens BIN:ar →</a>' : "") + "</div>";
     if (!info) return html + '<div class="chart-note">Namnet kan inte slås upp i BOLD (inget artnamn).</div>';
     if (!info.named) return html + '<div class="chart-note">Namnet finns inte på några poster i det hämtade BOLD-datat.</div>';
     var ownIn = info.own_bins || {}, listed = {};
